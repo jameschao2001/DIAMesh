@@ -26,6 +26,7 @@ Date: 2026-05-01
 """
 
 import argparse
+import math
 import sys
 
 import bpy  # type: ignore[import-not-found]  # only resolvable inside Blender
@@ -82,41 +83,83 @@ def main() -> int:
         print("ERROR: specify --target-faces or --ratio", file=sys.stderr)
         return 2
 
-    # Minimum faces a part must keep, regardless of how aggressive the
-    # global ratio is. Without this, thin parts (frame bars, screws)
-    # collapse to almost nothing and the mesh visibly disintegrates at
-    # boundaries — the symptom reported on the 5AxisGlueSpraying.fbx
-    # 0.1-ratio attempt: scattered fragments and gaping edge holes.
-    MIN_FACES_PER_PART = 32
+    # === Two-stage adaptive decimation ===
+    #
+    # Stage 1 — DISSOLVE (planar/limited dissolve):
+    #   Merges co-planar faces (within angle_limit) into larger n-gons.
+    #   This is *visually lossless* on flat regions: it removes redundant
+    #   triangulation artefacts without disturbing silhouettes or
+    #   boundaries. Industrial CAD-style FBX (5-axis glue sprayer, screw
+    #   machine) has many planar panels — dissolve eats the redundant
+    #   triangulations first, before COLLAPSE has to touch the geometry.
+    #
+    # Stage 2 — COLLAPSE (quadric edge collapse):
+    #   Hits the user's target ratio. Runs *after* dissolve so the
+    #   target budget is spent on actually-needed reduction, not on
+    #   re-shrinking already-flat panels.
+    #
+    # === Adaptive per-part ratio ===
+    #
+    # Industrial scenes are heterogeneous: a single panel may have 10k
+    # faces while a frame bar has 50. Applying the same global ratio
+    # naively makes thin parts disintegrate. Instead we use a logarithmic
+    # weighting:
+    #
+    #   per_obj_ratio = decimate_ratio ** (log(n_obj) / log(in_faces))
+    #
+    # Properties (with global decimate_ratio = 0.10):
+    #   * n_obj == in_faces (single mesh)        → per_obj_ratio = 0.10
+    #   * n_obj is large fraction of total       → per_obj_ratio ≈ 0.10
+    #   * n_obj is tiny (frame bar, screw)       → per_obj_ratio → 1.0
+    # Small parts are protected automatically without a hardcoded floor.
+    # The aggregate face count still lands close to the user's target
+    # because large parts dominate the budget.
 
-    # Apply DECIMATE modifier per mesh object. Per-object ratio keeps
-    # part-level material assignment intact (no global concat). The
-    # `delimit` set tells Blender's collapser NOT to merge edges across
-    # material seams, sharp angles, or UV seams — this is what keeps
-    # boundary geometry intact when ratios are aggressive.
+    PLANAR_ANGLE_DEG = 5.0  # within this angle, faces are treated as co-planar
+    log_total = math.log(max(in_faces, 2))
+
     for obj in meshes:
         bpy.context.view_layer.objects.active = obj
-        n_obj = len(obj.data.polygons)
-        if n_obj <= MIN_FACES_PER_PART:
-            # Already below the floor — leave untouched.
+        n_obj_orig = len(obj.data.polygons)
+        if n_obj_orig < 4:  # below this DECIMATE refuses to touch
             continue
-        target = max(MIN_FACES_PER_PART, int(round(n_obj * decimate_ratio)))
-        per_obj_ratio = max(0.001, min(1.0, target / n_obj))
 
-        mod = obj.modifiers.new(name="DIAMesh_Decimate", type="DECIMATE")
-        mod.decimate_type = "COLLAPSE"          # quadric edge collapse
-        mod.ratio = per_obj_ratio
-        mod.use_collapse_triangulate = True
-        # Preserve hard boundaries — material edges, sharp creases, UV seams.
-        # Without these, low ratios eat through panel edges and collapse
-        # frame elements to crumbs.
-        mod.delimit = {"MATERIAL", "SHARP", "SEAM"}
+        # --- Stage 1: planar dissolve (lossless on flat regions) ---
+        diss = obj.modifiers.new(name="DIAMesh_Dissolve", type="DECIMATE")
+        diss.decimate_type = "DISSOLVE"
+        diss.angle_limit = math.radians(PLANAR_ANGLE_DEG)
+        diss.delimit = {"NORMAL"}        # don't dissolve across normal discontinuities
+        diss.use_dissolve_boundaries = False  # keep mesh open boundaries pinned
         try:
-            bpy.ops.object.modifier_apply(modifier=mod.name)
+            bpy.ops.object.modifier_apply(modifier=diss.name)
         except RuntimeError as e:
-            # Some non-mesh-eval objects can fail apply; skip them silently
-            print(f"WARN: could not apply decimate to {obj.name}: {e}", file=sys.stderr)
-            obj.modifiers.remove(mod)
+            print(f"WARN: dissolve failed on {obj.name}: {e}", file=sys.stderr)
+            obj.modifiers.remove(diss)
+
+        # --- Stage 2: collapse to adaptive target ---
+        n_after_dissolve = len(obj.data.polygons)
+        if n_after_dissolve < 4:
+            continue
+
+        size_weight = math.log(max(n_obj_orig, 2)) / log_total  # in [0, 1]
+        per_obj_ratio = decimate_ratio ** size_weight
+        target = max(4, int(round(n_obj_orig * per_obj_ratio)))
+        if target >= n_after_dissolve:
+            # Adaptive ratio already protective enough; dissolve was
+            # sufficient on its own.
+            continue
+
+        col = obj.modifiers.new(name="DIAMesh_Collapse", type="DECIMATE")
+        col.decimate_type = "COLLAPSE"
+        col.ratio = max(0.001, min(1.0, target / n_after_dissolve))
+        col.use_collapse_triangulate = True
+        # Keep collapse from eating through hard boundaries.
+        col.delimit = {"MATERIAL", "SHARP", "SEAM"}
+        try:
+            bpy.ops.object.modifier_apply(modifier=col.name)
+        except RuntimeError as e:
+            print(f"WARN: collapse failed on {obj.name}: {e}", file=sys.stderr)
+            obj.modifiers.remove(col)
 
     out_meshes = _mesh_objects()
     out_faces = _total_faces(out_meshes)
