@@ -82,14 +82,35 @@ def main() -> int:
         print("ERROR: specify --target-faces or --ratio", file=sys.stderr)
         return 2
 
+    # Minimum faces a part must keep, regardless of how aggressive the
+    # global ratio is. Without this, thin parts (frame bars, screws)
+    # collapse to almost nothing and the mesh visibly disintegrates at
+    # boundaries — the symptom reported on the 5AxisGlueSpraying.fbx
+    # 0.1-ratio attempt: scattered fragments and gaping edge holes.
+    MIN_FACES_PER_PART = 32
+
     # Apply DECIMATE modifier per mesh object. Per-object ratio keeps
-    # part-level material assignment intact (no global concat).
+    # part-level material assignment intact (no global concat). The
+    # `delimit` set tells Blender's collapser NOT to merge edges across
+    # material seams, sharp angles, or UV seams — this is what keeps
+    # boundary geometry intact when ratios are aggressive.
     for obj in meshes:
         bpy.context.view_layer.objects.active = obj
+        n_obj = len(obj.data.polygons)
+        if n_obj <= MIN_FACES_PER_PART:
+            # Already below the floor — leave untouched.
+            continue
+        target = max(MIN_FACES_PER_PART, int(round(n_obj * decimate_ratio)))
+        per_obj_ratio = max(0.001, min(1.0, target / n_obj))
+
         mod = obj.modifiers.new(name="DIAMesh_Decimate", type="DECIMATE")
         mod.decimate_type = "COLLAPSE"          # quadric edge collapse
-        mod.ratio = decimate_ratio
+        mod.ratio = per_obj_ratio
         mod.use_collapse_triangulate = True
+        # Preserve hard boundaries — material edges, sharp creases, UV seams.
+        # Without these, low ratios eat through panel edges and collapse
+        # frame elements to crumbs.
+        mod.delimit = {"MATERIAL", "SHARP", "SEAM"}
         try:
             bpy.ops.object.modifier_apply(modifier=mod.name)
         except RuntimeError as e:
