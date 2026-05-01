@@ -56,11 +56,28 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Drop disconnected mesh islands with fewer than this many "
-             "faces. CAD assemblies often contain genuinely disjoint micro-"
-             "components (screw caps, sensor heads) that look attached only "
-             "because dense triangulation visually surrounds them. After "
-             "decimation those mini-islands hover as artefacts. 0 disables "
-             "the cull (default). Try 50-200 for production-line LOD.",
+             "faces. Crude — frame bars are also small islands and get "
+             "swept along. Prefer --cull-disjoint for CAD assemblies.",
+    )
+    p.add_argument(
+        "--cull-disjoint",
+        type=float,
+        default=0.0,
+        help="Distance-based island cull. Drop islands whose bounding "
+             "box is further from the largest anchor islands than this "
+             "fraction of the overall mesh diagonal. 0 disables (default). "
+             "Try 0.03-0.08 for production-line LOD: small parts that "
+             "*touch* the main structure stay (frame bars, fasteners on "
+             "panels), but parts floating millimeters off the assembly "
+             "by CAD design (screw caps, sensor probes) get culled.",
+    )
+    p.add_argument(
+        "--cull-anchor-count",
+        type=int,
+        default=10,
+        help="With --cull-disjoint: number of largest islands (by face "
+             "count) to use as anchors. An island is kept if it is close "
+             "to ANY anchor. Default 10.",
     )
     return p.parse_args(argv)
 
@@ -93,6 +110,136 @@ def _join_all(meshes):
     bpy.context.view_layer.objects.active = meshes[0]
     bpy.ops.object.join()
     return bpy.context.view_layer.objects.active
+
+
+def _bbox_distance(a_min, a_max, b_min, b_max) -> float:
+    """Closest distance between two axis-aligned bounding boxes (R^3).
+
+    Returns 0 if they overlap or touch.
+    """
+    dx = max(0.0, max(a_min[0], b_min[0]) - min(a_max[0], b_max[0]))
+    dy = max(0.0, max(a_min[1], b_min[1]) - min(a_max[1], b_max[1]))
+    dz = max(0.0, max(a_min[2], b_min[2]) - min(a_max[2], b_max[2]))
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+
+def _cull_disjoint_islands(obj, distance_threshold: float, anchor_count: int):
+    """Drop islands far from the largest anchor islands.
+
+    Returns ``(islands_removed, faces_removed)``. A no-op when
+    ``distance_threshold <= 0``.
+
+    Strategy:
+
+    1. Find every connected face island (BFS over edge-shared faces).
+    2. Compute each island's axis-aligned bounding box and the global
+       mesh's bbox diagonal.
+    3. Pick the top ``anchor_count`` islands by face count as
+       "anchors" — these are the structural skeleton (panels, frame
+       runs, large enclosures).
+    4. Every other island gets its closest-bbox-distance to ANY anchor.
+       If that distance, normalised by the mesh diagonal, exceeds
+       ``distance_threshold``, the island is genuinely floating off the
+       assembly and gets deleted. If it touches or sits within the
+       threshold of an anchor, it stays — even if it's tiny — because
+       it's part of the visual skeleton.
+
+    This is more selective than ``--min-island-faces`` which kills
+    everything below a face-count floor regardless of placement.
+    """
+    if distance_threshold <= 0.0:
+        return 0, 0
+
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.faces.ensure_lookup_table()
+    bm.verts.ensure_lookup_table()
+
+    # 1. Connected components
+    visited = set()
+    islands = []  # list of list[BMFace]
+    for seed in bm.faces:
+        if seed.index in visited:
+            continue
+        stack = [seed]
+        island = []
+        while stack:
+            f = stack.pop()
+            if f.index in visited:
+                continue
+            visited.add(f.index)
+            island.append(f)
+            for edge in f.edges:
+                for adj in edge.link_faces:
+                    if adj.index not in visited:
+                        stack.append(adj)
+        islands.append(island)
+
+    if len(islands) <= 1:
+        bm.free()
+        return 0, 0
+
+    # 2. Per-island bbox
+    INF = float("inf")
+    bboxes = []  # (min(x,y,z), max(x,y,z))
+    for island in islands:
+        bmin = [INF, INF, INF]
+        bmax = [-INF, -INF, -INF]
+        for face in island:
+            for v in face.verts:
+                co = v.co
+                for i in range(3):
+                    if co[i] < bmin[i]:
+                        bmin[i] = co[i]
+                    if co[i] > bmax[i]:
+                        bmax[i] = co[i]
+        bboxes.append((tuple(bmin), tuple(bmax)))
+
+    # Global mesh diagonal
+    global_min = [INF, INF, INF]
+    global_max = [-INF, -INF, -INF]
+    for bmin, bmax in bboxes:
+        for i in range(3):
+            if bmin[i] < global_min[i]:
+                global_min[i] = bmin[i]
+            if bmax[i] > global_max[i]:
+                global_max[i] = bmax[i]
+    diag = math.sqrt(sum((global_max[i] - global_min[i]) ** 2 for i in range(3)))
+    abs_threshold = distance_threshold * diag if diag > 0 else 0.0
+
+    # 3. Pick anchor islands by face count
+    sorted_indices = sorted(range(len(islands)), key=lambda i: -len(islands[i]))
+    anchor_indices = set(sorted_indices[:anchor_count])
+
+    # 4. For each non-anchor island, check distance to nearest anchor
+    to_delete = []
+    removed_islands = 0
+    for idx, island in enumerate(islands):
+        if idx in anchor_indices:
+            continue
+        my_min, my_max = bboxes[idx]
+        # Closest distance to any anchor
+        min_dist = INF
+        for a_idx in anchor_indices:
+            a_min, a_max = bboxes[a_idx]
+            d = _bbox_distance(my_min, my_max, a_min, a_max)
+            if d < min_dist:
+                min_dist = d
+                if min_dist <= abs_threshold:
+                    break  # close enough; keep
+        if min_dist > abs_threshold:
+            to_delete.extend(island)
+            removed_islands += 1
+
+    faces_removed = len(to_delete)
+    if to_delete:
+        bmesh.ops.delete(bm, geom=to_delete, context="FACES")
+
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+
+    return removed_islands, faces_removed
 
 
 def _drop_small_islands(obj, min_faces: int):
@@ -265,7 +412,14 @@ def main() -> int:
     print(f"DIAMESH_REPAIR_DEGEN_EDGES={repair['degen_edges']}")
     print(f"DIAMESH_REPAIR_SHARP_MARKED={repair['sharp_marked']}")
 
-    # Stage 0.5 — drop disjoint micro-islands (LOD-friendly cull)
+    # Stage 0.5 — distance-based island cull (LOD-friendly, preferred)
+    cull_islands, cull_faces = _cull_disjoint_islands(
+        joined, args.cull_disjoint, args.cull_anchor_count
+    )
+    print(f"DIAMESH_CULLED_ISLANDS={cull_islands}")
+    print(f"DIAMESH_CULLED_ISLAND_FACES={cull_faces}")
+
+    # Stage 0.6 — face-count island cull (legacy/blunt option)
     removed_islands, removed_island_faces = _drop_small_islands(
         joined, args.min_island_faces
     )

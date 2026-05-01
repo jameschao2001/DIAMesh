@@ -135,6 +135,8 @@ def _reduce_blender(
     target_faces: int | None,
     ratio: float | None,
     min_island_faces: int = 0,
+    cull_disjoint: float = 0.0,
+    cull_anchor_count: int = 10,
 ) -> dict[str, int | float]:
     """Decimate via Blender headless — preserves materials, textures, hierarchy.
 
@@ -168,6 +170,9 @@ def _reduce_blender(
         cmd += ["--ratio", str(float(ratio))]
     if min_island_faces and min_island_faces > 0:
         cmd += ["--min-island-faces", str(int(min_island_faces))]
+    if cull_disjoint and cull_disjoint > 0:
+        cmd += ["--cull-disjoint", str(float(cull_disjoint))]
+        cmd += ["--cull-anchor-count", str(int(cull_anchor_count))]
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -226,6 +231,8 @@ def reduce_mesh(
     ratio: float | None = None,
     backend: str = "trimesh",
     min_island_faces: int = 0,
+    cull_disjoint: float = 0.0,
+    cull_anchor_count: int = 10,
 ) -> dict[str, int | float]:
     """Reduce a mesh file's triangle count.
 
@@ -286,6 +293,8 @@ def reduce_mesh(
         return _reduce_blender(
             input_path, output_path, target_faces, ratio,
             min_island_faces=min_island_faces,
+            cull_disjoint=cull_disjoint,
+            cull_anchor_count=cull_anchor_count,
         )
 
     meshes = load_fbx(input_path)

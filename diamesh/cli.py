@@ -58,6 +58,8 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
         ratio=args.ratio,
         backend=args.backend,
         min_island_faces=args.min_island_faces,
+        cull_disjoint=args.cull_disjoint,
+        cull_anchor_count=args.cull_anchor_count,
     )
     print(f"reduced: {args.file}")
     for k, v in metrics.items():
@@ -109,12 +111,29 @@ def main(argv: list[str] | None = None) -> int:
         "--min-island-faces",
         type=int,
         default=0,
-        help="(blender backend only) Drop disconnected mesh islands with "
-             "fewer than this many faces. CAD assemblies often have "
-             "genuinely disjoint micro-components (screw caps, sensor heads) "
-             "that float a few mm off the parent frame by design and become "
-             "visible artefacts after aggressive decimation. 0 disables "
-             "(default). Try 50-200 for production-line LOD.",
+        help="(blender backend, blunt) Drop disconnected mesh islands "
+             "with fewer than this many faces. Crude — frame bars are "
+             "small islands too. Prefer --cull-disjoint.",
+    )
+    p_reduce.add_argument(
+        "--cull-disjoint",
+        type=float,
+        default=0.0,
+        help="(blender backend, recommended) Distance-based island cull. "
+             "Drop islands whose bounding box is further from the largest "
+             "anchor islands than this fraction of the overall mesh "
+             "diagonal. 0 disables (default). Try 0.03-0.08 for "
+             "production-line LOD: parts that *touch* the main structure "
+             "stay, parts floating mm off the assembly by CAD design "
+             "(screw caps, sensor probes) get culled.",
+    )
+    p_reduce.add_argument(
+        "--cull-anchor-count",
+        type=int,
+        default=10,
+        help="With --cull-disjoint: how many of the largest islands to "
+             "treat as 'anchor structure' (the rest are checked for "
+             "distance to any anchor). Default 10.",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 
