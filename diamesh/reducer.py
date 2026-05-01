@@ -192,7 +192,7 @@ def _reduce_blender(
             f"Blender reported success but produced no output at {output_path}"
         )
 
-    return {
+    result = {
         "input_faces": int(metrics.get("input_faces", 0)),
         "output_faces": int(metrics.get("output_faces", 0)),
         "achieved_ratio": float(metrics.get("ratio", 0.0)),
@@ -202,6 +202,20 @@ def _reduce_blender(
         "output_path": str(output_path),
         "blender_exe": str(blender_exe),
     }
+    # Surface Stage-0 mesh repair stats so the operator can see how
+    # much CAD-import cleanup happened before decimation.
+    for k in (
+        "repair_welded_verts",
+        "repair_loose_verts",
+        "repair_loose_edges",
+        "repair_degen_edges",
+        "repair_sharp_marked",
+        "repair_objects_touched",
+        "repair_objects_total",
+    ):
+        if k in metrics:
+            result[k] = metrics[k]
+    return result
 
 
 def reduce_mesh(

@@ -218,14 +218,16 @@ def main() -> int:
         ):
             repair_stats["objects_repaired"] += 1
 
-    print(
-        f"DIAMESH_REPAIR: welded={repair_stats['welded_verts']} "
-        f"loose_v={repair_stats['loose_verts_removed']} "
-        f"loose_e={repair_stats['loose_edges_removed']} "
-        f"degen={repair_stats['degenerate_dissolved']} "
-        f"sharp_marked={repair_stats['sharp_marked']} "
-        f"objects={repair_stats['objects_repaired']}/{len(meshes)}"
-    )
+    # Emit each repair stat as its own DIAMESH_<KEY>=<value> sentinel so
+    # the parent process's parser picks them up cleanly and surfaces them
+    # in the final metrics dict for the user.
+    print(f"DIAMESH_REPAIR_WELDED_VERTS={repair_stats['welded_verts']}")
+    print(f"DIAMESH_REPAIR_LOOSE_VERTS={repair_stats['loose_verts_removed']}")
+    print(f"DIAMESH_REPAIR_LOOSE_EDGES={repair_stats['loose_edges_removed']}")
+    print(f"DIAMESH_REPAIR_DEGEN_EDGES={repair_stats['degenerate_dissolved']}")
+    print(f"DIAMESH_REPAIR_SHARP_MARKED={repair_stats['sharp_marked']}")
+    print(f"DIAMESH_REPAIR_OBJECTS_TOUCHED={repair_stats['objects_repaired']}")
+    print(f"DIAMESH_REPAIR_OBJECTS_TOTAL={len(meshes)}")
 
     for obj in meshes:
         bpy.context.view_layer.objects.active = obj
