@@ -822,8 +822,18 @@ class Viewer(pyglet.window.Window):
                 )
             self.viewer_flags['record'] = not self.viewer_flags['record']
 
-        # S saves the current frame as an image
-        elif symbol == pyglet.window.key.S:
+        # P saves the current frame as an image (was S in upstream pyrender;
+        # changed in DIAMesh to avoid clashing with Windows Snipping Tool's
+        # Win+Shift+S hotkey, which still leaks Shift+S to the app on some
+        # configurations). The modifier guard further prevents accidental
+        # firing when any modifier (Shift/Ctrl/Alt/Cmd) is held.
+        elif (symbol == pyglet.window.key.P
+              and not (modifiers & (
+                  pyglet.window.key.MOD_SHIFT
+                  | pyglet.window.key.MOD_CTRL
+                  | pyglet.window.key.MOD_ALT
+                  | pyglet.window.key.MOD_COMMAND
+              ))):
             self._save_image()
 
         # W toggles through wireframe modes
