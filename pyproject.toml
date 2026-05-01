@@ -25,6 +25,7 @@ dependencies = [
     "six",
     "trimesh",
     "pyassimp",
+    "fast-simplification",
 ]
 
 [project.optional-dependencies]

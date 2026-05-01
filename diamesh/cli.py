@@ -42,8 +42,29 @@ def _cmd_info(args: argparse.Namespace) -> int:
 
 
 def _cmd_reduce(args: argparse.Namespace) -> int:
-    print("[reduce] Phase 2 not implemented yet — see ROADMAP.md", file=sys.stderr)
-    return 2
+    from diamesh.reducer import reduce_mesh
+
+    if not args.output:
+        # default: <input>_reduced.glb next to the source
+        from pathlib import Path
+
+        src = Path(args.file)
+        args.output = str(src.with_name(f"{src.stem}_reduced.glb"))
+
+    metrics = reduce_mesh(
+        input_path=args.file,
+        output_path=args.output,
+        target_faces=args.target_faces,
+        ratio=args.ratio,
+        backend=args.backend,
+    )
+    print(f"reduced: {args.file}")
+    for k, v in metrics.items():
+        if isinstance(v, float):
+            print(f"  {k}: {v:.4f}")
+        else:
+            print(f"  {k}: {v}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,11 +82,25 @@ def main(argv: list[str] | None = None) -> int:
     p_info.add_argument("file", help="path to .fbx file")
     p_info.set_defaults(func=_cmd_info)
 
-    p_reduce = sub.add_parser("reduce", help="(Phase 2) auto mesh reduction")
-    p_reduce.add_argument("file", help="path to .fbx file")
-    p_reduce.add_argument("--target-faces", type=int, help="target face count")
-    p_reduce.add_argument("--ratio", type=float, help="keep ratio in (0, 1]")
-    p_reduce.add_argument("--output", "-o", help="output path")
+    p_reduce = sub.add_parser("reduce", help="auto quadric mesh reduction")
+    p_reduce.add_argument("file", help="path to .fbx (or other trimesh-supported) file")
+    p_reduce.add_argument(
+        "--target-faces", type=int, help="absolute target face count"
+    )
+    p_reduce.add_argument(
+        "--ratio", type=float, help="keep this fraction of original faces, in (0, 1]"
+    )
+    p_reduce.add_argument(
+        "--output", "-o",
+        help="output path; suffix decides format. Default <input>_reduced.glb",
+    )
+    p_reduce.add_argument(
+        "--backend",
+        choices=["trimesh", "pymeshlab"],
+        default="trimesh",
+        help="reduction backend (default: trimesh = fast-simplification; "
+             "pymeshlab uses MeshLab with boundary/normal preservation)",
+    )
     p_reduce.set_defaults(func=_cmd_reduce)
 
     args = parser.parse_args(argv)

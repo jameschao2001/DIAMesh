@@ -17,14 +17,17 @@
 * [ ] Test on a sample FBX (`tests/fixtures/cube.fbx`)
 * [ ] Smoke test: viewer opens, mesh visible, mouse rotation works
 
-## Phase 2 — Mesh Reduction
+## Phase 2 — Mesh Reduction (✅ implemented)
 
-* [ ] `diamesh/reducer.py` — quadric edge collapse decimation
-  * Backend candidates: `pymeshlab` (preferred — battle-tested) / `open3d.simplify_quadric_decimation` / custom
-* [ ] `diamesh reduce <file.fbx> --target-faces N` CLI
-* [ ] `diamesh reduce <file.fbx> --ratio 0.25` CLI (keep 25%)
-* [ ] Output FBX or GLB (configurable)
-* [ ] Quality metrics: original vs reduced face count, vertex count, file size
+* [x] `diamesh/reducer.py` — quadric edge collapse decimation
+  * Default backend: `trimesh.simplify_quadric_decimation` (fast-simplification C++ wrapper)
+  * Optional: `pymeshlab` backend with boundary + normal preservation
+* [x] `diamesh reduce <file.fbx> --target-faces N` CLI
+* [x] `diamesh reduce <file.fbx> --ratio 0.25` CLI (keep 25%)
+* [x] Output GLB (default, material-friendly), OBJ, PLY, STL via trimesh exporters
+* [x] Quality metrics: input/output face count, vertex count, achieved ratio
+* [ ] Per-part reduction (preserve material assignment) — currently concatenates parts
+* [ ] FBX output (would need a fbx2gltf reverse pipeline or autodesk SDK)
 
 ## Phase 3 — Integrated GUI (Future)
 
