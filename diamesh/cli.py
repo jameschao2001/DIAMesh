@@ -96,10 +96,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_reduce.add_argument(
         "--backend",
-        choices=["trimesh", "pymeshlab"],
+        choices=["trimesh", "pymeshlab", "blender"],
         default="trimesh",
-        help="reduction backend (default: trimesh = fast-simplification; "
-             "pymeshlab uses MeshLab with boundary/normal preservation)",
+        help="reduction backend. trimesh (default) = fast-simplification. "
+             "pymeshlab = MeshLab with boundary/normal preservation. "
+             "blender = headless Blender (preserves materials, textures, "
+             "hierarchy — recommended for FBX-out workflows; requires "
+             "vendor/blender/blender.exe or BLENDER_EXE env var)",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 

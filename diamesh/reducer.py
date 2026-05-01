@@ -19,12 +19,20 @@ Date: 2026-05-01
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import trimesh
 
 from diamesh.loader import load_fbx
+
+
+_BLENDER_DECIMATE_SCRIPT = (
+    Path(__file__).resolve().parent.parent / "scripts" / "blender_decimate.py"
+)
 
 
 _VENDOR_ASSIMP_DIR = Path(__file__).resolve().parent.parent / "vendor" / "assimp"
@@ -58,6 +66,142 @@ def _combine(meshes: list[trimesh.Trimesh]) -> trimesh.Trimesh:
     if len(meshes) == 1:
         return meshes[0]
     return trimesh.util.concatenate(meshes)
+
+
+_VENDOR_BLENDER_DIR = Path(__file__).resolve().parent.parent / "vendor" / "blender"
+
+
+def _find_blender_exe() -> Path | None:
+    """Locate ``blender.exe`` (Windows) or ``blender`` (POSIX).
+
+    Resolution order:
+
+    1. ``BLENDER_EXE`` environment variable (operator override).
+    2. **Vendored portable** under ``DIAMesh/vendor/blender/`` —
+       the recommended deployment per project convention; treats Blender
+       as a self-contained third-party tool checked into ``vendor/`` like
+       FBX2glTF and Assimp. Not committed to git (too large) but resolves
+       transparently when the operator drops a portable build into the
+       directory.
+    3. ``shutil.which("blender")`` — covers cases where Blender is on PATH.
+    4. Common system install paths.
+    """
+    env = os.environ.get("BLENDER_EXE")
+    if env and Path(env).exists():
+        return Path(env)
+
+    # Vendored portable — preferred location for DIAMesh
+    if _VENDOR_BLENDER_DIR.exists():
+        candidates = []
+        bin_name = "blender.exe" if sys.platform == "win32" else "blender"
+        direct = _VENDOR_BLENDER_DIR / bin_name
+        if direct.exists():
+            return direct
+        for sub in _VENDOR_BLENDER_DIR.iterdir():
+            if sub.is_dir():
+                exe = sub / bin_name
+                if exe.exists():
+                    candidates.append(exe)
+        if candidates:
+            return candidates[0]
+
+    on_path = shutil.which("blender")
+    if on_path:
+        return Path(on_path)
+
+    if sys.platform == "win32":
+        roots = [
+            Path("C:/Program Files/Blender Foundation"),
+            Path("C:/Program Files (x86)/Blender Foundation"),
+        ]
+        for root in roots:
+            if not root.exists():
+                continue
+            direct = root / "blender.exe"
+            if direct.exists():
+                return direct
+            for sub in root.iterdir():
+                if sub.is_dir():
+                    exe = sub / "blender.exe"
+                    if exe.exists():
+                        return exe
+
+    return None
+
+
+def _reduce_blender(
+    input_path: Path,
+    output_path: Path,
+    target_faces: int | None,
+    ratio: float | None,
+) -> dict[str, int | float]:
+    """Decimate via Blender headless — preserves materials, textures, hierarchy.
+
+    Spawns ``blender --background --python scripts/blender_decimate.py``
+    with the user's input/output and a ratio target. Parses
+    ``DIAMESH_*=…`` sentinel lines from stdout for the metrics dict.
+    """
+    blender_exe = _find_blender_exe()
+    if blender_exe is None:
+        raise RuntimeError(
+            "Blender executable not found. Install Blender (any 4.x release) "
+            "and either:\n"
+            "  - set BLENDER_EXE=C:\\path\\to\\blender.exe, or\n"
+            "  - add Blender's install dir to PATH, or\n"
+            "  - place portable Blender under D:\\Blender\\ or "
+            "C:\\Program Files\\Blender Foundation\\.\n"
+            "Download: https://www.blender.org/download/"
+        )
+
+    cmd = [
+        str(blender_exe),
+        "--background",
+        "--python", str(_BLENDER_DECIMATE_SCRIPT),
+        "--",
+        "--input", str(input_path),
+        "--output", str(output_path),
+    ]
+    if target_faces is not None:
+        cmd += ["--target-faces", str(int(target_faces))]
+    elif ratio is not None:
+        cmd += ["--ratio", str(float(ratio))]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Blender decimate failed (exit={proc.returncode}).\n"
+            f"stderr:\n{proc.stderr}\nstdout:\n{proc.stdout[-2000:]}"
+        )
+
+    metrics: dict[str, int | float] = {}
+    for line in proc.stdout.splitlines():
+        if not line.startswith("DIAMESH_"):
+            continue
+        key, _, val = line.partition("=")
+        key = key.removeprefix("DIAMESH_").lower()
+        try:
+            metrics[key] = int(val)
+        except ValueError:
+            try:
+                metrics[key] = float(val)
+            except ValueError:
+                metrics[key] = val
+
+    if not output_path.exists():
+        raise RuntimeError(
+            f"Blender reported success but produced no output at {output_path}"
+        )
+
+    return {
+        "input_faces": int(metrics.get("input_faces", 0)),
+        "output_faces": int(metrics.get("output_faces", 0)),
+        "achieved_ratio": float(metrics.get("ratio", 0.0)),
+        "input_vertices": int(metrics.get("input_vertices", 0)),
+        "output_vertices": int(metrics.get("output_vertices", 0)),
+        "backend": "blender",
+        "output_path": str(output_path),
+        "blender_exe": str(blender_exe),
+    }
 
 
 def reduce_mesh(
@@ -116,6 +260,15 @@ def reduce_mesh(
     if ratio is not None and not (0.0 < ratio <= 1.0):
         raise ValueError(f"ratio must be in (0, 1], got {ratio}.")
 
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if backend == "blender":
+        # Blender path bypasses trimesh entirely; it owns FBX I/O end-to-end
+        # so materials, textures, and hierarchy survive the round-trip.
+        return _reduce_blender(input_path, output_path, target_faces, ratio)
+
     meshes = load_fbx(input_path)
     if not meshes:
         raise RuntimeError(f"No meshes found in {input_path}")
@@ -135,8 +288,6 @@ def reduce_mesh(
     else:
         raise NotImplementedError(f"unknown backend: {backend!r}")
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.suffix.lower() == ".fbx":
         _export_fbx_via_assimp(reduced, output_path)
     else:

@@ -38,3 +38,9 @@ outputs/
 # Track sample / reference fbx in tests/fixtures, ignore everything else:
 *.fbx
 !tests/fixtures/*.fbx
+
+# Vendor: Blender portable is too large for git (~450 MB). Operator
+# drops it into vendor/blender/ per BLENDER_SETUP.md. Keep .gitkeep so
+# the directory exists in fresh clones.
+vendor/blender/*
+!vendor/blender/.gitkeep
