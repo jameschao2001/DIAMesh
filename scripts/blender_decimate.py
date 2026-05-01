@@ -30,6 +30,7 @@ import math
 import sys
 
 import bpy  # type: ignore[import-not-found]  # only resolvable inside Blender
+import bmesh  # type: ignore[import-not-found]
 
 
 def parse_args() -> argparse.Namespace:
@@ -116,7 +117,44 @@ def main() -> int:
     # because large parts dominate the budget.
 
     PLANAR_ANGLE_DEG = 5.0  # within this angle, faces are treated as co-planar
+    WELD_DIST = 0.0001       # 0.1 mm — heal CAD-import vertex duplicates
     log_total = math.log(max(in_faces, 2))
+
+    # === Stage 0 — weld coincident vertices ===
+    #
+    # CAD exporters (SolidWorks, Catia, Inventor) emit FBX with each
+    # surface patch independently triangulated. Two adjacent patches
+    # share a *geometric* boundary — same xyz coordinate — but their
+    # boundary vertices have **different indices**. Visually you can't
+    # tell because the verts are coincident; topologically the mesh is
+    # already non-manifold at every patch seam.
+    #
+    # When DECIMATE collapses, the two unwelded boundary vertices move
+    # independently, opening a crack at the seam. The cracks are what
+    # the user sees as "edge disconnection / fragmentation."
+    #
+    # bmesh.ops.remove_doubles welds vertices within WELD_DIST. Once
+    # the patches share boundary indices, collapse stays consistent
+    # across them.
+    welded_meshes = 0
+    welded_verts_total = 0
+    for obj in meshes:
+        n_verts_before = len(obj.data.vertices)
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=WELD_DIST)
+        bm.to_mesh(obj.data)
+        bm.free()
+        obj.data.update()
+        n_verts_after = len(obj.data.vertices)
+        if n_verts_after < n_verts_before:
+            welded_meshes += 1
+            welded_verts_total += (n_verts_before - n_verts_after)
+    if welded_meshes:
+        print(
+            f"DIAMESH_WELD: merged {welded_verts_total} duplicate verts "
+            f"across {welded_meshes} mesh(es) at {WELD_DIST} m threshold"
+        )
 
     for obj in meshes:
         bpy.context.view_layer.objects.active = obj
