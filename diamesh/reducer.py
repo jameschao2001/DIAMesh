@@ -18,11 +18,35 @@ Date: 2026-05-01
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 import trimesh
 
 from diamesh.loader import load_fbx
+
+
+_VENDOR_ASSIMP_DIR = Path(__file__).resolve().parent.parent / "vendor" / "assimp"
+
+
+def _ensure_assimp_dll_path() -> None:
+    """Make the vendored ``assimp-vc143-mt.dll`` discoverable to ``pyassimp``.
+
+    pyassimp searches the system PATH for the assimp shared library; we
+    inject the vendored directory at the front so the bundled binary
+    wins over any older system install. Idempotent.
+    """
+    if not _VENDOR_ASSIMP_DIR.exists():
+        return
+    dll_dir = str(_VENDOR_ASSIMP_DIR)
+    if dll_dir not in os.environ.get("PATH", "").split(os.pathsep):
+        os.environ["PATH"] = dll_dir + os.pathsep + os.environ.get("PATH", "")
+    if hasattr(os, "add_dll_directory"):  # Windows-only safe-no-op elsewhere
+        try:
+            os.add_dll_directory(dll_dir)
+        except (FileNotFoundError, OSError):
+            pass
 
 
 def _combine(meshes: list[trimesh.Trimesh]) -> trimesh.Trimesh:
@@ -113,7 +137,10 @@ def reduce_mesh(
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    reduced.export(str(output_path))
+    if output_path.suffix.lower() == ".fbx":
+        _export_fbx_via_assimp(reduced, output_path)
+    else:
+        reduced.export(str(output_path))
 
     return {
         "input_faces": n_faces_orig,
@@ -124,6 +151,31 @@ def reduce_mesh(
         "backend": backend,
         "output_path": str(output_path),
     }
+
+
+def _export_fbx_via_assimp(mesh: trimesh.Trimesh, output_path: Path) -> None:
+    """Write ``mesh`` as an FBX file using the vendored assimp library.
+
+    trimesh has no FBX exporter, so we round-trip through OBJ:
+    trimesh writes a temporary ``.obj``, pyassimp reads it back into an
+    assimp scene, then assimp exports as FBX. The vendored
+    ``assimp-vc143-mt.dll`` (Assimp 6.0.5) is added to ``PATH`` first.
+
+    Materials / textures are dropped on this round-trip; for textured
+    output prefer ``.glb``.
+    """
+    _ensure_assimp_dll_path()
+    import pyassimp  # heavy import — defer until we know we need it
+
+    with tempfile.TemporaryDirectory(prefix="diamesh_fbxout_") as tmp:
+        tmp_obj = Path(tmp) / "intermediate.obj"
+        mesh.export(str(tmp_obj))
+        with pyassimp.load(str(tmp_obj)) as scene:
+            pyassimp.export(scene, str(output_path), "fbx")
+    if not output_path.exists():
+        raise RuntimeError(
+            f"FBX export reported success but produced no file at {output_path}"
+        )
 
 
 def _reduce_pymeshlab(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
