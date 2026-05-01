@@ -51,6 +51,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output", required=True)
     p.add_argument("--target-faces", type=int)
     p.add_argument("--ratio", type=float)
+    p.add_argument(
+        "--min-island-faces",
+        type=int,
+        default=0,
+        help="Drop disconnected mesh islands with fewer than this many "
+             "faces. CAD assemblies often contain genuinely disjoint micro-"
+             "components (screw caps, sensor heads) that look attached only "
+             "because dense triangulation visually surrounds them. After "
+             "decimation those mini-islands hover as artefacts. 0 disables "
+             "the cull (default). Try 50-200 for production-line LOD.",
+    )
     return p.parse_args(argv)
 
 
@@ -82,6 +93,65 @@ def _join_all(meshes):
     bpy.context.view_layer.objects.active = meshes[0]
     bpy.ops.object.join()
     return bpy.context.view_layer.objects.active
+
+
+def _drop_small_islands(obj, min_faces: int):
+    """Delete disconnected mesh islands smaller than ``min_faces`` faces.
+
+    Returns ``(islands_removed, faces_removed)``. A no-op when
+    ``min_faces <= 0``.
+
+    Use case: industrial CAD-to-FBX commonly has mini sub-components
+    (screw caps, sensor probes, brackets) modelled as standalone
+    geometry that floats a few mm off the parent frame *by design*.
+    They visually merge into the assembly only because the surrounding
+    dense triangulation hides the gap. After decimation those
+    components remain disjoint and become visible "floating chunks".
+    For LOD-style production-line viewers the right answer is to
+    cull them — they're invisible at line-level zoom.
+    """
+    if min_faces <= 0:
+        return 0, 0
+
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.faces.ensure_lookup_table()
+
+    visited = set()
+    islands = []
+    for seed in bm.faces:
+        if seed.index in visited:
+            continue
+        stack = [seed]
+        island_faces = []
+        while stack:
+            f = stack.pop()
+            if f.index in visited:
+                continue
+            visited.add(f.index)
+            island_faces.append(f)
+            for edge in f.edges:
+                for adj in edge.link_faces:
+                    if adj.index not in visited:
+                        stack.append(adj)
+        islands.append(island_faces)
+
+    to_delete = []
+    removed_islands = 0
+    for island in islands:
+        if len(island) < min_faces:
+            to_delete.extend(island)
+            removed_islands += 1
+
+    faces_removed = len(to_delete)
+    if to_delete:
+        bmesh.ops.delete(bm, geom=to_delete, context="FACES")
+
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+
+    return removed_islands, faces_removed
 
 
 def _repair(obj, weld_dist: float, sharp_angle_rad: float, degen_dist: float):
@@ -194,6 +264,13 @@ def main() -> int:
     print(f"DIAMESH_REPAIR_LOOSE_EDGES={repair['loose_edges']}")
     print(f"DIAMESH_REPAIR_DEGEN_EDGES={repair['degen_edges']}")
     print(f"DIAMESH_REPAIR_SHARP_MARKED={repair['sharp_marked']}")
+
+    # Stage 0.5 — drop disjoint micro-islands (LOD-friendly cull)
+    removed_islands, removed_island_faces = _drop_small_islands(
+        joined, args.min_island_faces
+    )
+    print(f"DIAMESH_REMOVED_ISLANDS={removed_islands}")
+    print(f"DIAMESH_REMOVED_ISLAND_FACES={removed_island_faces}")
 
     # Stage 1 — planar dissolve (lossless on flat regions)
     bpy.context.view_layer.objects.active = joined

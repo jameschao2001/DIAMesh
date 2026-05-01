@@ -57,6 +57,7 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
         target_faces=args.target_faces,
         ratio=args.ratio,
         backend=args.backend,
+        min_island_faces=args.min_island_faces,
     )
     print(f"reduced: {args.file}")
     for k, v in metrics.items():
@@ -103,6 +104,17 @@ def main(argv: list[str] | None = None) -> int:
              "blender = headless Blender (preserves materials, textures, "
              "hierarchy — recommended for FBX-out workflows; requires "
              "vendor/blender/blender.exe or BLENDER_EXE env var)",
+    )
+    p_reduce.add_argument(
+        "--min-island-faces",
+        type=int,
+        default=0,
+        help="(blender backend only) Drop disconnected mesh islands with "
+             "fewer than this many faces. CAD assemblies often have "
+             "genuinely disjoint micro-components (screw caps, sensor heads) "
+             "that float a few mm off the parent frame by design and become "
+             "visible artefacts after aggressive decimation. 0 disables "
+             "(default). Try 50-200 for production-line LOD.",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 

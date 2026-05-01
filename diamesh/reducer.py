@@ -134,6 +134,7 @@ def _reduce_blender(
     output_path: Path,
     target_faces: int | None,
     ratio: float | None,
+    min_island_faces: int = 0,
 ) -> dict[str, int | float]:
     """Decimate via Blender headless — preserves materials, textures, hierarchy.
 
@@ -165,6 +166,8 @@ def _reduce_blender(
         cmd += ["--target-faces", str(int(target_faces))]
     elif ratio is not None:
         cmd += ["--ratio", str(float(ratio))]
+    if min_island_faces and min_island_faces > 0:
+        cmd += ["--min-island-faces", str(int(min_island_faces))]
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -222,6 +225,7 @@ def reduce_mesh(
     target_faces: int | None = None,
     ratio: float | None = None,
     backend: str = "trimesh",
+    min_island_faces: int = 0,
 ) -> dict[str, int | float]:
     """Reduce a mesh file's triangle count.
 
@@ -279,7 +283,10 @@ def reduce_mesh(
     if backend == "blender":
         # Blender path bypasses trimesh entirely; it owns FBX I/O end-to-end
         # so materials, textures, and hierarchy survive the round-trip.
-        return _reduce_blender(input_path, output_path, target_faces, ratio)
+        return _reduce_blender(
+            input_path, output_path, target_faces, ratio,
+            min_island_faces=min_island_faces,
+        )
 
     meshes = load_fbx(input_path)
     if not meshes:
