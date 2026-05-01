@@ -202,19 +202,17 @@ def _reduce_blender(
         "output_path": str(output_path),
         "blender_exe": str(blender_exe),
     }
-    # Surface Stage-0 mesh repair stats so the operator can see how
-    # much CAD-import cleanup happened before decimation.
-    for k in (
-        "repair_welded_verts",
-        "repair_loose_verts",
-        "repair_loose_edges",
-        "repair_degen_edges",
-        "repair_sharp_marked",
-        "repair_objects_touched",
-        "repair_objects_total",
-    ):
-        if k in metrics:
-            result[k] = metrics[k]
+    # Surface every additional sentinel — repair_*, joined_*,
+    # material_slots — that the Blender script chose to emit. White-
+    # listing is too brittle: every time the script grows a new metric
+    # the operator would lose visibility until reducer.py was updated.
+    for k, v in metrics.items():
+        if k in result:
+            continue
+        if k in ("input_faces", "output_faces", "input_vertices",
+                 "output_vertices", "ratio", "decimate_ratio_requested"):
+            continue  # already mapped above
+        result[k] = v
     return result
 
 

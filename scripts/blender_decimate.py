@@ -1,36 +1,46 @@
 """DIAMesh — Blender headless decimation script.
 
-This script runs *inside Blender's Python runtime* (not the system
-Python). It is invoked by ``diamesh.reducer._reduce_blender`` like so::
+Runs inside Blender's Python runtime (``blender --background --python``)
+and is driven by ``diamesh.reducer._reduce_blender``::
 
     blender --background --python scripts/blender_decimate.py -- \\
         --input model.fbx --output model_lod.fbx \\
         [--target-faces N | --ratio R]
 
-Blender swallows everything before ``--`` for its own arg parser; we
-parse the rest. The script:
+Pipeline (single mesh, multi-material approach for industrial CAD LOD):
 
-1. clears the default cube/light/camera scene,
-2. imports the source FBX (preserves materials, textures, hierarchy),
-3. applies a ``DECIMATE`` modifier (collapse mode) to every mesh
-   object, computing the per-object ratio so the *aggregate* face
-   count hits the requested target,
-4. exports the result back to FBX with embedded textures and
-   ``COPY`` path mode (textures stay self-contained),
-5. emits ``DIAMESH_*=…`` metric lines to stdout for the parent
+1. Import FBX (preserves materials, textures, transforms).
+2. **Join all mesh objects into a single mesh.** This is the key step
+   that lets cross-part vertex pairs share an index after the global
+   weld in stage 0; without it, parts that *visually* touch but live
+   in separate ``bpy.data.objects`` collapse independently and split
+   apart. Materials survive: each face keeps its ``material_index``
+   pointing at the merged material slot table.
+3. Stage 0 — global bmesh repair on the joined mesh:
+     A. recalc_face_normals (consistent winding)
+     0. remove_doubles weld (heals CAD seam coincident verts AND
+        cross-part contact verts at one shot)
+     B. dissolve_degenerate (zero-area sliver triangles)
+     C. delete loose verts/edges (kills floating-fragment sources)
+     D. mark sharp edges by dihedral (so delimit SHARP fires)
+     E. triangulate (uniform topology for COLLAPSE)
+4. Stage 1 — DISSOLVE modifier (planar merge, 5° threshold).
+5. Stage 2 — COLLAPSE modifier (target ratio, delimit MATERIAL/SHARP/SEAM).
+6. Export FBX with embedded textures, ``COPY`` path mode.
+7. Emit ``DIAMESH_*=…`` metric sentinel lines on stdout for the parent
    Python process to scrape.
 
 Author: James Chao, Homi (AI Agent)
-Version: 0.1.0
-Date: 2026-05-01
+Version: 0.2.0
+Date: 2026-05-02
 """
 
 import argparse
 import math
 import sys
 
-import bpy  # type: ignore[import-not-found]  # only resolvable inside Blender
-import bmesh  # type: ignore[import-not-found]
+import bpy     # type: ignore[import-not-found]
+import bmesh   # type: ignore[import-not-found]
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,26 +66,114 @@ def _total_verts(meshes) -> int:
     return sum(len(o.data.vertices) for o in meshes)
 
 
+def _join_all(meshes):
+    """Join every mesh object into the first one; return the joined object.
+
+    Material slots accumulate (Blender's join op handles slot merging
+    and re-points each face's material_index), so per-face material
+    assignment survives. Object-level hierarchy is lost, which is
+    acceptable for LOD-style outputs.
+    """
+    if len(meshes) <= 1:
+        return meshes[0]
+    bpy.ops.object.select_all(action="DESELECT")
+    for obj in meshes:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = meshes[0]
+    bpy.ops.object.join()
+    return bpy.context.view_layer.objects.active
+
+
+def _repair(obj, weld_dist: float, sharp_angle_rad: float, degen_dist: float):
+    """Run the full Stage-0 mesh repair sweep on a single object.
+
+    Returns a dict with the count of each repair operation. Operations
+    in order: recalc normals, weld, dissolve degenerate, drop loose,
+    triangulate, mark sharp.
+    """
+    n_verts_before = len(obj.data.vertices)
+    n_edges_before = len(obj.data.edges)
+
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+
+    # A. Recalc face normals (consistent winding)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+
+    # 0. Weld coincident verts (intra- AND cross-part)
+    weld_result = bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=weld_dist)
+    welded = len(weld_result.get("targetmap", {})) if isinstance(weld_result, dict) else 0
+
+    # B. Dissolve degenerate edges/faces
+    bmesh.ops.dissolve_degenerate(bm, dist=degen_dist, edges=bm.edges)
+
+    # C. Delete loose
+    loose_v = [v for v in bm.verts if not v.link_faces]
+    if loose_v:
+        bmesh.ops.delete(bm, geom=loose_v, context="VERTS")
+    loose_e = [e for e in bm.edges if not e.link_faces]
+    if loose_e:
+        bmesh.ops.delete(bm, geom=loose_e, context="EDGES")
+
+    # E. Triangulate
+    bmesh.ops.triangulate(
+        bm, faces=bm.faces[:], quad_method="BEAUTY", ngon_method="BEAUTY"
+    )
+
+    # D. Mark sharp by dihedral angle
+    sharp_marked = 0
+    for edge in bm.edges:
+        if len(edge.link_faces) == 2:
+            try:
+                if edge.calc_face_angle() > sharp_angle_rad:
+                    edge.smooth = False
+                    sharp_marked += 1
+            except ValueError:
+                pass
+
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+
+    n_verts_after = len(obj.data.vertices)
+    n_edges_after = len(obj.data.edges)
+
+    return {
+        "welded_verts": max(0, n_verts_before - n_verts_after - len(loose_v)),
+        "loose_verts": len(loose_v),
+        "loose_edges": len(loose_e),
+        "degen_edges": max(0, n_edges_before - n_edges_after - len(loose_e)),
+        "sharp_marked": sharp_marked,
+    }
+
+
 def main() -> int:
     args = parse_args()
 
-    # Start from an empty scene to avoid the default cube polluting outputs.
+    # Constants
+    WELD_DIST = 0.0001        # 0.1 mm — heal CAD-import vertex duplicates
+    DEGEN_DIST = 1.0e-5
+    SHARP_ANGLE_DEG = 30.0
+    PLANAR_ANGLE_DEG = 5.0
+    sharp_angle_rad = math.radians(SHARP_ANGLE_DEG)
+
+    # Empty starter scene
     bpy.ops.wm.read_factory_settings(use_empty=True)
 
-    # Import FBX. Blender's importer preserves material/texture/animation.
+    # Import
     bpy.ops.import_scene.fbx(filepath=args.input)
-
-    meshes = _mesh_objects()
-    if not meshes:
+    meshes_in = _mesh_objects()
+    if not meshes_in:
         print("ERROR: no mesh objects found in FBX", file=sys.stderr)
         return 2
-
-    in_faces = _total_faces(meshes)
-    in_verts = _total_verts(meshes)
+    in_faces = _total_faces(meshes_in)
+    in_verts = _total_verts(meshes_in)
+    n_objects_in = len(meshes_in)
     if in_faces == 0:
         print("ERROR: input FBX has zero faces", file=sys.stderr)
         return 2
 
+    # Decide ratio
     if args.target_faces is not None:
         decimate_ratio = max(0.001, min(1.0, args.target_faces / in_faces))
     elif args.ratio is not None:
@@ -84,198 +182,52 @@ def main() -> int:
         print("ERROR: specify --target-faces or --ratio", file=sys.stderr)
         return 2
 
-    # === Two-stage adaptive decimation ===
-    #
-    # Stage 1 — DISSOLVE (planar/limited dissolve):
-    #   Merges co-planar faces (within angle_limit) into larger n-gons.
-    #   This is *visually lossless* on flat regions: it removes redundant
-    #   triangulation artefacts without disturbing silhouettes or
-    #   boundaries. Industrial CAD-style FBX (5-axis glue sprayer, screw
-    #   machine) has many planar panels — dissolve eats the redundant
-    #   triangulations first, before COLLAPSE has to touch the geometry.
-    #
-    # Stage 2 — COLLAPSE (quadric edge collapse):
-    #   Hits the user's target ratio. Runs *after* dissolve so the
-    #   target budget is spent on actually-needed reduction, not on
-    #   re-shrinking already-flat panels.
-    #
-    # === Adaptive per-part ratio ===
-    #
-    # Industrial scenes are heterogeneous: a single panel may have 10k
-    # faces while a frame bar has 50. Applying the same global ratio
-    # naively makes thin parts disintegrate. Instead we use a logarithmic
-    # weighting:
-    #
-    #   per_obj_ratio = decimate_ratio ** (log(n_obj) / log(in_faces))
-    #
-    # Properties (with global decimate_ratio = 0.10):
-    #   * n_obj == in_faces (single mesh)        → per_obj_ratio = 0.10
-    #   * n_obj is large fraction of total       → per_obj_ratio ≈ 0.10
-    #   * n_obj is tiny (frame bar, screw)       → per_obj_ratio → 1.0
-    # Small parts are protected automatically without a hardcoded floor.
-    # The aggregate face count still lands close to the user's target
-    # because large parts dominate the budget.
+    # Join all into a single mesh — this is the key change vs v0.1
+    joined = _join_all(meshes_in)
+    print(f"DIAMESH_JOINED_OBJECTS={n_objects_in}")
+    print(f"DIAMESH_MATERIAL_SLOTS={len(joined.material_slots)}")
 
-    PLANAR_ANGLE_DEG = 5.0   # within this angle, faces are treated as co-planar
-    WELD_DIST = 0.0001        # 0.1 mm — heal CAD-import vertex duplicates
-    DEGEN_DIST = 1.0e-5        # collapse edges shorter than this
-    SHARP_ANGLE_DEG = 30.0     # mark edges sharper than this so delimit SHARP fires
-    sharp_angle_rad = math.radians(SHARP_ANGLE_DEG)
-    log_total = math.log(max(in_faces, 2))
+    # Stage 0 — full repair sweep on the joined mesh
+    repair = _repair(joined, WELD_DIST, sharp_angle_rad, DEGEN_DIST)
+    print(f"DIAMESH_REPAIR_WELDED_VERTS={repair['welded_verts']}")
+    print(f"DIAMESH_REPAIR_LOOSE_VERTS={repair['loose_verts']}")
+    print(f"DIAMESH_REPAIR_LOOSE_EDGES={repair['loose_edges']}")
+    print(f"DIAMESH_REPAIR_DEGEN_EDGES={repair['degen_edges']}")
+    print(f"DIAMESH_REPAIR_SHARP_MARKED={repair['sharp_marked']}")
 
-    # === Stage 0 — mesh repair (CAD-import cleanup) ===
-    #
-    # Industrial FBX coming out of CAD exporters (SolidWorks, Catia,
-    # Inventor) carries a load of subtle topology defects that DECIMATE
-    # is not robust against. We do a single bmesh sweep per object that
-    # applies six repairs in the right order BEFORE the decimator runs:
-    #
-    #   A. recalc_face_normals — fix flipped/inconsistent winding so
-    #      the dissolve step's NORMAL delimit can detect feature edges.
-    #   0. remove_doubles (weld) — merge coincident verts within
-    #      WELD_DIST. CAD exports each NURBS patch as its own triangle
-    #      island; verts at patch seams match in space but not in
-    #      index. Welding gives DECIMATE a consistent edge graph.
-    #   B. dissolve_degenerate — collapse zero-length edges / zero-area
-    #      sliver faces. These are noise that throws off the quadric
-    #      error metric.
-    #   C. delete loose verts/edges — drop geometry not connected to
-    #      any face. Source of "floating fragment" artefacts after
-    #      collapse.
-    #   E. triangulate — CAD FBX is mostly triangulated already, but
-    #      mixed quad/ngon meshes confuse COLLAPSE; force pure tri.
-    #   D. mark sharp by face angle — set edge.smooth=False on edges
-    #      whose dihedral exceeds SHARP_ANGLE_RAD. Without this, the
-    #      delimit SHARP setting in stage 2 has no edges to honour.
-    repair_stats = {
-        "welded_verts": 0,
-        "loose_verts_removed": 0,
-        "loose_edges_removed": 0,
-        "degenerate_dissolved": 0,
-        "sharp_marked": 0,
-        "objects_repaired": 0,
-    }
-    for obj in meshes:
-        n_verts_before = len(obj.data.vertices)
-        n_edges_before = len(obj.data.edges)
-        n_faces_before = len(obj.data.polygons)
+    # Stage 1 — planar dissolve (lossless on flat regions)
+    bpy.context.view_layer.objects.active = joined
+    diss = joined.modifiers.new(name="DIAMesh_Dissolve", type="DECIMATE")
+    diss.decimate_type = "DISSOLVE"
+    diss.angle_limit = math.radians(PLANAR_ANGLE_DEG)
+    diss.delimit = {"NORMAL"}
+    diss.use_dissolve_boundaries = False
+    try:
+        bpy.ops.object.modifier_apply(modifier=diss.name)
+    except RuntimeError as e:
+        print(f"WARN: dissolve failed: {e}", file=sys.stderr)
+        joined.modifiers.remove(diss)
 
-        bm = bmesh.new()
-        bm.from_mesh(obj.data)
-
-        # A. Recalc face normals (consistent winding)
-        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-
-        # 0. Weld coincident verts (CAD seam heal)
-        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=WELD_DIST)
-
-        # B. Dissolve degenerate edges/faces (zero-area slivers)
-        bmesh.ops.dissolve_degenerate(bm, dist=DEGEN_DIST, edges=bm.edges)
-
-        # C. Remove loose geometry
-        loose_verts = [v for v in bm.verts if not v.link_faces]
-        if loose_verts:
-            bmesh.ops.delete(bm, geom=loose_verts, context="VERTS")
-        loose_edges = [e for e in bm.edges if not e.link_faces]
-        if loose_edges:
-            bmesh.ops.delete(bm, geom=loose_edges, context="EDGES")
-
-        # E. Triangulate (uniform topology for COLLAPSE)
-        bmesh.ops.triangulate(
-            bm, faces=bm.faces[:], quad_method="BEAUTY", ngon_method="BEAUTY"
-        )
-
-        # D. Mark sharp edges by dihedral angle
-        marked = 0
-        for edge in bm.edges:
-            if len(edge.link_faces) == 2:
-                try:
-                    if edge.calc_face_angle() > sharp_angle_rad:
-                        edge.smooth = False
-                        marked += 1
-                except ValueError:
-                    pass
-
-        bm.to_mesh(obj.data)
-        bm.free()
-        obj.data.update()
-
-        n_verts_after = len(obj.data.vertices)
-        n_edges_after = len(obj.data.edges)
-        repair_stats["welded_verts"] += max(0, n_verts_before - n_verts_after - len(loose_verts))
-        repair_stats["loose_verts_removed"] += len(loose_verts)
-        repair_stats["loose_edges_removed"] += len(loose_edges)
-        # degenerate_dissolved is approximated by remaining edge delta after
-        # subtracting loose edge removal — exact count requires bmesh result inspection.
-        edge_delta = max(0, n_edges_before - n_edges_after - len(loose_edges))
-        repair_stats["degenerate_dissolved"] += edge_delta
-        repair_stats["sharp_marked"] += marked
-        if (
-            n_verts_after != n_verts_before
-            or len(loose_verts) > 0
-            or len(loose_edges) > 0
-            or marked > 0
-        ):
-            repair_stats["objects_repaired"] += 1
-
-    # Emit each repair stat as its own DIAMESH_<KEY>=<value> sentinel so
-    # the parent process's parser picks them up cleanly and surfaces them
-    # in the final metrics dict for the user.
-    print(f"DIAMESH_REPAIR_WELDED_VERTS={repair_stats['welded_verts']}")
-    print(f"DIAMESH_REPAIR_LOOSE_VERTS={repair_stats['loose_verts_removed']}")
-    print(f"DIAMESH_REPAIR_LOOSE_EDGES={repair_stats['loose_edges_removed']}")
-    print(f"DIAMESH_REPAIR_DEGEN_EDGES={repair_stats['degenerate_dissolved']}")
-    print(f"DIAMESH_REPAIR_SHARP_MARKED={repair_stats['sharp_marked']}")
-    print(f"DIAMESH_REPAIR_OBJECTS_TOUCHED={repair_stats['objects_repaired']}")
-    print(f"DIAMESH_REPAIR_OBJECTS_TOTAL={len(meshes)}")
-
-    for obj in meshes:
-        bpy.context.view_layer.objects.active = obj
-        n_obj_orig = len(obj.data.polygons)
-        if n_obj_orig < 4:  # below this DECIMATE refuses to touch
-            continue
-
-        # --- Stage 1: planar dissolve (lossless on flat regions) ---
-        diss = obj.modifiers.new(name="DIAMesh_Dissolve", type="DECIMATE")
-        diss.decimate_type = "DISSOLVE"
-        diss.angle_limit = math.radians(PLANAR_ANGLE_DEG)
-        diss.delimit = {"NORMAL"}        # don't dissolve across normal discontinuities
-        diss.use_dissolve_boundaries = False  # keep mesh open boundaries pinned
-        try:
-            bpy.ops.object.modifier_apply(modifier=diss.name)
-        except RuntimeError as e:
-            print(f"WARN: dissolve failed on {obj.name}: {e}", file=sys.stderr)
-            obj.modifiers.remove(diss)
-
-        # --- Stage 2: collapse to adaptive target ---
-        n_after_dissolve = len(obj.data.polygons)
-        if n_after_dissolve < 4:
-            continue
-
-        size_weight = math.log(max(n_obj_orig, 2)) / log_total  # in [0, 1]
-        per_obj_ratio = decimate_ratio ** size_weight
-        target = max(4, int(round(n_obj_orig * per_obj_ratio)))
-        if target >= n_after_dissolve:
-            # Adaptive ratio already protective enough; dissolve was
-            # sufficient on its own.
-            continue
-
-        col = obj.modifiers.new(name="DIAMesh_Collapse", type="DECIMATE")
+    # Stage 2 — collapse to target ratio
+    n_after_dissolve = len(joined.data.polygons)
+    target = max(4, int(round(in_faces * decimate_ratio)))
+    if target < n_after_dissolve:
+        col = joined.modifiers.new(name="DIAMesh_Collapse", type="DECIMATE")
         col.decimate_type = "COLLAPSE"
         col.ratio = max(0.001, min(1.0, target / n_after_dissolve))
         col.use_collapse_triangulate = True
-        # Keep collapse from eating through hard boundaries.
         col.delimit = {"MATERIAL", "SHARP", "SEAM"}
         try:
             bpy.ops.object.modifier_apply(modifier=col.name)
         except RuntimeError as e:
-            print(f"WARN: collapse failed on {obj.name}: {e}", file=sys.stderr)
-            obj.modifiers.remove(col)
+            print(f"WARN: collapse failed: {e}", file=sys.stderr)
+            joined.modifiers.remove(col)
 
-    out_meshes = _mesh_objects()
-    out_faces = _total_faces(out_meshes)
-    out_verts = _total_verts(out_meshes)
+    # Output stats
+    out_faces = len(joined.data.polygons)
+    out_verts = len(joined.data.vertices)
 
+    # Export FBX
     bpy.ops.export_scene.fbx(
         filepath=args.output,
         use_selection=False,
@@ -286,7 +238,7 @@ def main() -> int:
         global_scale=1.0,
     )
 
-    # Sentinel lines for the parent Python process to scrape.
+    # Sentinel lines for the parent Python process
     print(f"DIAMESH_INPUT_FACES={in_faces}")
     print(f"DIAMESH_OUTPUT_FACES={out_faces}")
     print(f"DIAMESH_INPUT_VERTICES={in_verts}")
