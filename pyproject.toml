@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diamesh"
+version = "0.1.0"
+description = "Python 3D FBX viewer + automatic mesh reduction, built on pyrender"
+authors = [
+    {name = "James Chao"},
+    {name = "Homi (AI Agent)"},
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pillow",
+    "pyglet<2",
+    "PyOpenGL",
+    "networkx",
+    "scipy",
+    "freetype-py",
+    "imageio",
+    "six",
+    "trimesh",
+    "pyassimp",
+]
+
+[project.optional-dependencies]
+reduce = ["pymeshlab"]
+dev = ["pytest", "pytest-cov", "ruff"]
+
+[project.scripts]
+diamesh = "diamesh.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["diamesh*", "pyrender*"]
+exclude = ["tests*", "vendor*"]
