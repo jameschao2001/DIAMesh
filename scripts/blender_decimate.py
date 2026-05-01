@@ -116,45 +116,116 @@ def main() -> int:
     # The aggregate face count still lands close to the user's target
     # because large parts dominate the budget.
 
-    PLANAR_ANGLE_DEG = 5.0  # within this angle, faces are treated as co-planar
-    WELD_DIST = 0.0001       # 0.1 mm — heal CAD-import vertex duplicates
+    PLANAR_ANGLE_DEG = 5.0   # within this angle, faces are treated as co-planar
+    WELD_DIST = 0.0001        # 0.1 mm — heal CAD-import vertex duplicates
+    DEGEN_DIST = 1.0e-5        # collapse edges shorter than this
+    SHARP_ANGLE_DEG = 30.0     # mark edges sharper than this so delimit SHARP fires
+    sharp_angle_rad = math.radians(SHARP_ANGLE_DEG)
     log_total = math.log(max(in_faces, 2))
 
-    # === Stage 0 — weld coincident vertices ===
+    # === Stage 0 — mesh repair (CAD-import cleanup) ===
     #
-    # CAD exporters (SolidWorks, Catia, Inventor) emit FBX with each
-    # surface patch independently triangulated. Two adjacent patches
-    # share a *geometric* boundary — same xyz coordinate — but their
-    # boundary vertices have **different indices**. Visually you can't
-    # tell because the verts are coincident; topologically the mesh is
-    # already non-manifold at every patch seam.
+    # Industrial FBX coming out of CAD exporters (SolidWorks, Catia,
+    # Inventor) carries a load of subtle topology defects that DECIMATE
+    # is not robust against. We do a single bmesh sweep per object that
+    # applies six repairs in the right order BEFORE the decimator runs:
     #
-    # When DECIMATE collapses, the two unwelded boundary vertices move
-    # independently, opening a crack at the seam. The cracks are what
-    # the user sees as "edge disconnection / fragmentation."
-    #
-    # bmesh.ops.remove_doubles welds vertices within WELD_DIST. Once
-    # the patches share boundary indices, collapse stays consistent
-    # across them.
-    welded_meshes = 0
-    welded_verts_total = 0
+    #   A. recalc_face_normals — fix flipped/inconsistent winding so
+    #      the dissolve step's NORMAL delimit can detect feature edges.
+    #   0. remove_doubles (weld) — merge coincident verts within
+    #      WELD_DIST. CAD exports each NURBS patch as its own triangle
+    #      island; verts at patch seams match in space but not in
+    #      index. Welding gives DECIMATE a consistent edge graph.
+    #   B. dissolve_degenerate — collapse zero-length edges / zero-area
+    #      sliver faces. These are noise that throws off the quadric
+    #      error metric.
+    #   C. delete loose verts/edges — drop geometry not connected to
+    #      any face. Source of "floating fragment" artefacts after
+    #      collapse.
+    #   E. triangulate — CAD FBX is mostly triangulated already, but
+    #      mixed quad/ngon meshes confuse COLLAPSE; force pure tri.
+    #   D. mark sharp by face angle — set edge.smooth=False on edges
+    #      whose dihedral exceeds SHARP_ANGLE_RAD. Without this, the
+    #      delimit SHARP setting in stage 2 has no edges to honour.
+    repair_stats = {
+        "welded_verts": 0,
+        "loose_verts_removed": 0,
+        "loose_edges_removed": 0,
+        "degenerate_dissolved": 0,
+        "sharp_marked": 0,
+        "objects_repaired": 0,
+    }
     for obj in meshes:
         n_verts_before = len(obj.data.vertices)
+        n_edges_before = len(obj.data.edges)
+        n_faces_before = len(obj.data.polygons)
+
         bm = bmesh.new()
         bm.from_mesh(obj.data)
+
+        # A. Recalc face normals (consistent winding)
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+
+        # 0. Weld coincident verts (CAD seam heal)
         bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=WELD_DIST)
+
+        # B. Dissolve degenerate edges/faces (zero-area slivers)
+        bmesh.ops.dissolve_degenerate(bm, dist=DEGEN_DIST, edges=bm.edges)
+
+        # C. Remove loose geometry
+        loose_verts = [v for v in bm.verts if not v.link_faces]
+        if loose_verts:
+            bmesh.ops.delete(bm, geom=loose_verts, context="VERTS")
+        loose_edges = [e for e in bm.edges if not e.link_faces]
+        if loose_edges:
+            bmesh.ops.delete(bm, geom=loose_edges, context="EDGES")
+
+        # E. Triangulate (uniform topology for COLLAPSE)
+        bmesh.ops.triangulate(
+            bm, faces=bm.faces[:], quad_method="BEAUTY", ngon_method="BEAUTY"
+        )
+
+        # D. Mark sharp edges by dihedral angle
+        marked = 0
+        for edge in bm.edges:
+            if len(edge.link_faces) == 2:
+                try:
+                    if edge.calc_face_angle() > sharp_angle_rad:
+                        edge.smooth = False
+                        marked += 1
+                except ValueError:
+                    pass
+
         bm.to_mesh(obj.data)
         bm.free()
         obj.data.update()
+
         n_verts_after = len(obj.data.vertices)
-        if n_verts_after < n_verts_before:
-            welded_meshes += 1
-            welded_verts_total += (n_verts_before - n_verts_after)
-    if welded_meshes:
-        print(
-            f"DIAMESH_WELD: merged {welded_verts_total} duplicate verts "
-            f"across {welded_meshes} mesh(es) at {WELD_DIST} m threshold"
-        )
+        n_edges_after = len(obj.data.edges)
+        repair_stats["welded_verts"] += max(0, n_verts_before - n_verts_after - len(loose_verts))
+        repair_stats["loose_verts_removed"] += len(loose_verts)
+        repair_stats["loose_edges_removed"] += len(loose_edges)
+        # degenerate_dissolved is approximated by remaining edge delta after
+        # subtracting loose edge removal — exact count requires bmesh result inspection.
+        edge_delta = max(0, n_edges_before - n_edges_after - len(loose_edges))
+        repair_stats["degenerate_dissolved"] += edge_delta
+        repair_stats["sharp_marked"] += marked
+        if (
+            n_verts_after != n_verts_before
+            or len(loose_verts) > 0
+            or len(loose_edges) > 0
+            or marked > 0
+        ):
+            repair_stats["objects_repaired"] += 1
+
+    print(
+        f"DIAMESH_REPAIR: welded={repair_stats['welded_verts']} "
+        f"loose_v={repair_stats['loose_verts_removed']} "
+        f"loose_e={repair_stats['loose_edges_removed']} "
+        f"degen={repair_stats['degenerate_dissolved']} "
+        f"sharp_marked={repair_stats['sharp_marked']} "
+        f"objects={repair_stats['objects_repaired']}/{len(meshes)}"
+    )
 
     for obj in meshes:
         bpy.context.view_layer.objects.active = obj
