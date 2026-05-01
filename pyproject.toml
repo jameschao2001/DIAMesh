@@ -16,7 +16,7 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "pillow",
-    "pyglet<2",
+    "pyglet>=2",
     "PyOpenGL",
     "networkx",
     "scipy",
