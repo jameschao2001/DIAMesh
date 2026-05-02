@@ -139,6 +139,8 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
         fill_holes_skip_design=args.fill_holes_skip_design,
         fill_holes_design_min_radius_frac=args.fill_holes_design_min_radius_frac,
         fill_holes_design_circularity=args.fill_holes_design_circularity,
+        weld_tolerance_frac=args.weld_tolerance_frac,
+        weld_tolerance_abs=args.weld_tolerance_abs,
     )
     print(f"reduced: {args.file}")
     for k, v in metrics.items():
@@ -282,6 +284,23 @@ def main(argv: list[str] | None = None) -> int:
         help="With --fill-holes-skip-design: circularity threshold (0-1) "
              "for design-hole classification. 1.0 = perfect circle. "
              "Default 0.85.",
+    )
+    p_reduce.add_argument(
+        "--weld-tolerance-frac",
+        type=float,
+        default=5.0e-5,
+        help="(blender backend) Stage 0 weld tolerance as a fraction of "
+             "the mesh bbox diagonal. Default 5e-5 ≈ 0.1 mm on a 2 m "
+             "machine (matching legacy 0.1 mm). Auto-scales: 5 m cell = "
+             "0.25 mm, 30 cm part = 0.015 mm.",
+    )
+    p_reduce.add_argument(
+        "--weld-tolerance-abs",
+        type=float,
+        default=None,
+        help="(blender backend) Override weld tolerance with an absolute "
+             "value (mesh units, mm for CAD). When set, overrides "
+             "--weld-tolerance-frac.",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 

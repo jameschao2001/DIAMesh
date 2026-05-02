@@ -123,6 +123,23 @@ def parse_args() -> argparse.Namespace:
         help="Circularity threshold (0-1) for design-hole classification. "
              "1.0 = perfect circle. Default 0.85.",
     )
+    p.add_argument(
+        "--weld-tolerance-frac",
+        type=float,
+        default=5.0e-5,
+        help="Stage 0 weld tolerance as a fraction of the mesh bbox "
+             "diagonal. Default 5e-5 ≈ 0.1 mm on a 2 m machine, "
+             "matching the legacy 0.1 mm constant. Auto-scales: a 5 m "
+             "robotic cell uses 0.25 mm, a 30 cm tabletop part uses "
+             "0.015 mm. Override with --weld-tolerance-abs.",
+    )
+    p.add_argument(
+        "--weld-tolerance-abs",
+        type=float,
+        default=None,
+        help="Absolute weld tolerance in mesh units (mm for CAD). "
+             "When set, overrides --weld-tolerance-frac.",
+    )
     return p.parse_args(argv)
 
 
@@ -516,7 +533,6 @@ def main() -> int:
     args = parse_args()
 
     # Constants
-    WELD_DIST = 0.0001        # 0.1 mm — heal CAD-import vertex duplicates
     DEGEN_DIST = 1.0e-5
     SHARP_ANGLE_DEG = 30.0
     PLANAR_ANGLE_DEG = 5.0
@@ -552,8 +568,31 @@ def main() -> int:
     print(f"DIAMESH_JOINED_OBJECTS={n_objects_in}")
     print(f"DIAMESH_MATERIAL_SLOTS={len(joined.material_slots)}")
 
+    # Adaptive weld tolerance — scale with mesh bbox so a 5 m robotic
+    # cell uses ~0.25 mm and a 30 cm tabletop part uses ~0.015 mm,
+    # rather than the legacy 0.1 mm being too tight for the former and
+    # too loose for the latter.
+    if args.weld_tolerance_abs is not None:
+        weld_dist = float(args.weld_tolerance_abs)
+        weld_source = "abs"
+    else:
+        xs = [v.co.x for v in joined.data.vertices]
+        ys = [v.co.y for v in joined.data.vertices]
+        zs = [v.co.z for v in joined.data.vertices]
+        if xs:
+            dx = max(xs) - min(xs)
+            dy = max(ys) - min(ys)
+            dz = max(zs) - min(zs)
+            mesh_diag = math.sqrt(dx * dx + dy * dy + dz * dz)
+        else:
+            mesh_diag = 0.0
+        weld_dist = max(1.0e-7, mesh_diag * float(args.weld_tolerance_frac))
+        weld_source = "frac"
+    print(f"DIAMESH_WELD_DIST={weld_dist:.6e}")
+    print(f"DIAMESH_WELD_SOURCE={weld_source}")
+
     # Stage 0 — full repair sweep on the joined mesh
-    repair = _repair(joined, WELD_DIST, sharp_angle_rad, DEGEN_DIST)
+    repair = _repair(joined, weld_dist, sharp_angle_rad, DEGEN_DIST)
     print(f"DIAMESH_REPAIR_WELDED_VERTS={repair['welded_verts']}")
     print(f"DIAMESH_REPAIR_LOOSE_VERTS={repair['loose_verts']}")
     print(f"DIAMESH_REPAIR_LOOSE_EDGES={repair['loose_edges']}")
