@@ -73,11 +73,11 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
     if inv >= 0:
         print(f"  inverted_normals:     {inv}  ({metrics['inverted_normals_pct']:.2f}% of faces)")
         if inv > 0:
-            print("    ↪ Suggest fixing in CAD export rather than relying on `reduce`")
-            print("      to mask the issue. DIAMesh's recalc_face_normals only")
-            print("      *unifies* winding, it does not flip an entire part outward.")
+            print("    => Suggest fixing in CAD export rather than relying on `reduce`")
+            print("       to mask the issue. DIAMesh's recalc_face_normals only")
+            print("       *unifies* winding, it does not flip an entire part outward.")
     else:
-        print("  inverted_normals:     (detection failed — ray engine missing or empty mesh)")
+        print("  inverted_normals:     (detection failed - ray engine missing or empty mesh)")
     return 0
 
 
@@ -91,7 +91,7 @@ def _cmd_diff(args: argparse.Namespace) -> int:
         seed=args.seed,
     )
     diag = metrics["bbox_diagonal"]
-    print(f"diff: {args.original}  →  {args.repaired}")
+    print(f"diff: {args.original}  ->  {args.repaired}")
     print(f"  bbox_diagonal:        {diag:.4f}  (units of input)")
     print(f"  orig_faces:           {metrics['orig_faces']}")
     print(f"  repaired_faces:       {metrics['repaired_faces']}")
@@ -99,11 +99,11 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     print()
     print(f"  hausdorff_max:        {metrics['hausdorff_max']:.6f}  "
           f"({metrics['hausdorff_max_pct_of_diag']:.4f}% of diagonal)")
-    print(f"    o→r:                {metrics['hausdorff_o2r']:.6f}")
-    print(f"    r→o:                {metrics['hausdorff_r2o']:.6f}")
+    print(f"    o->r:               {metrics['hausdorff_o2r']:.6f}")
+    print(f"    r->o:               {metrics['hausdorff_r2o']:.6f}")
     print(f"  chamfer:              {metrics['chamfer']:.6f}  "
           f"({metrics['chamfer_pct_of_diag']:.4f}% of diagonal)")
-    print(f"  mean_normal_dev_deg:  {metrics['mean_normal_dev_deg']:.4f}°")
+    print(f"  mean_normal_dev_deg:  {metrics['mean_normal_dev_deg']:.4f} deg")
     print()
     if metrics['volume_orig'] == metrics['volume_orig']:  # not NaN
         print(f"  volume_orig:          {metrics['volume_orig']:.4f}")
