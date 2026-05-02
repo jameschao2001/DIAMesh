@@ -26,7 +26,6 @@ dependencies = [
     "trimesh",
     "pyassimp",
     "fast-simplification",
-    "meshoptimizer",
 ]
 
 [project.optional-dependencies]
