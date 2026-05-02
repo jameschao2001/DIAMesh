@@ -3,7 +3,9 @@
 Subcommands:
 
 * ``diamesh view <file.fbx>`` — open an interactive viewer.
-* ``diamesh info <file.fbx>`` — print mesh statistics without rendering.
+* ``diamesh info <file.fbx>`` — quick mesh statistics.
+* ``diamesh diagnose <file.fbx>`` — full pre-repair health report
+  (watertight, non-manifold, degenerate, islands, inverted normals).
 * ``diamesh reduce ...`` — auto quadric mesh reduction.
 * ``diamesh diff <orig> <repaired>`` — geometric deviation metrics
   (Hausdorff / Chamfer / volume / normal deviation) between two meshes.
@@ -40,6 +42,42 @@ def _cmd_info(args: argparse.Namespace) -> int:
             f"  mesh[{i}]: V={m.vertices.shape[0]}, F={m.faces.shape[0]}, "
             f"watertight={m.is_watertight}, bounds={bbox}"
         )
+    return 0
+
+
+def _cmd_diagnose(args: argparse.Namespace) -> int:
+    from diamesh.diagnose import diagnose_mesh
+
+    metrics = diagnose_mesh(args.file)
+
+    if args.json:
+        import json
+        print(json.dumps(metrics, indent=2, default=str))
+        return 0
+
+    print(f"diagnose: {args.file}")
+    print(f"  face_count:           {metrics['face_count']}")
+    print(f"  vert_count:           {metrics['vert_count']}")
+    print(f"  bbox_diagonal:        {metrics['bbox_diagonal']:.4f}  (units of input)")
+    print()
+    print(f"  watertight:           {metrics['watertight']}")
+    print(f"  winding_consistent:   {metrics['winding_consistent']}")
+    print(f"  boundary_edges:       {metrics['boundary_edges']}")
+    print(f"  non_manifold_edges:   {metrics['non_manifold_edges']}  (edges shared by 3+ faces)")
+    print(f"  degenerate_faces:     {metrics['degenerate_faces']}  (zero / near-zero area)")
+    print()
+    print(f"  island_count:         {metrics['island_count']}")
+    print(f"  largest_islands:      {metrics['largest_islands']}  (top 5 by face count)")
+    print()
+    inv = metrics["inverted_normals"]
+    if inv >= 0:
+        print(f"  inverted_normals:     {inv}  ({metrics['inverted_normals_pct']:.2f}% of faces)")
+        if inv > 0:
+            print("    ↪ Suggest fixing in CAD export rather than relying on `reduce`")
+            print("      to mask the issue. DIAMesh's recalc_face_normals only")
+            print("      *unifies* winding, it does not flip an entire part outward.")
+    else:
+        print("  inverted_normals:     (detection failed — ray engine missing or empty mesh)")
     return 0
 
 
@@ -125,6 +163,18 @@ def main(argv: list[str] | None = None) -> int:
     p_info = sub.add_parser("info", help="print mesh statistics for an FBX")
     p_info.add_argument("file", help="path to .fbx file")
     p_info.set_defaults(func=_cmd_info)
+
+    p_diag = sub.add_parser(
+        "diagnose",
+        help="full pre-repair health report (watertight, non-manifold, "
+             "degenerate, islands, inverted normals)",
+    )
+    p_diag.add_argument("file", help="path to .fbx (or other format)")
+    p_diag.add_argument(
+        "--json", action="store_true",
+        help="emit metrics as JSON (machine-readable, for tooling)",
+    )
+    p_diag.set_defaults(func=_cmd_diagnose)
 
     p_diff = sub.add_parser(
         "diff",
