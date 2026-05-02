@@ -33,15 +33,21 @@ The `pyrender/` folder is an **internalized copy** of pyrender — DIAMesh treat
 
 ## Install
 
+> **Internal users:** DIAMesh is not publicly hosted. Ask the
+> development team (James Chao / Homi) for the latest **DIAMesh
+> zip**. Unpack it, `cd` into the unpacked directory, then run:
+
 ```bash
 pip install -e .
 ```
 
 ### Platform-specific vendor binaries
 
-Windows users get FBX2glTF + Assimp shipped in the repo and can use the
-tool immediately. Linux / macOS users run a one-time setup that
-auto-downloads the equivalent binaries:
+Windows: FBX2glTF + Assimp ship inside the zip and work immediately.
+
+Linux / macOS users run a one-time setup that auto-downloads the
+equivalent binaries (this step still needs internet access to
+GitHub releases):
 
 ```bash
 python scripts/setup_vendor.py
