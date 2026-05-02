@@ -148,6 +148,29 @@ def parse_args() -> argparse.Namespace:
              "intentionally share 3-patch junctions; turn on when the "
              "post-reduce mesh has shading artifacts or boolean failures.",
     )
+    p.add_argument(
+        "--fill-holes-smooth",
+        action="store_true",
+        help="After --auto-fill-holes, run Laplacian relaxation on the "
+             "newly-added faces and their 1-ring vertex neighbours, so "
+             "patched regions blend with surrounding curvature instead "
+             "of reading as a flat triangle bandage.",
+    )
+    p.add_argument(
+        "--fill-holes-smooth-iter",
+        type=int,
+        default=2,
+        help="Iterations for --fill-holes-smooth. Default 2 (subtle); "
+             "increase for stronger blending, but excessive smoothing "
+             "shrinks fine features near the patch.",
+    )
+    p.add_argument(
+        "--fill-holes-smooth-factor",
+        type=float,
+        default=0.5,
+        help="Per-iteration relaxation strength in (0, 1]. 0 = no move, "
+             "1 = move fully to centroid of neighbours. Default 0.5.",
+    )
     return p.parse_args(argv)
 
 
@@ -775,6 +798,51 @@ def main() -> int:
         if args.fill_holes_skip_design:
             print(f"DIAMESH_FILL_HOLES_DESIGN_SKIPPED={design_skipped}")
             print(f"DIAMESH_FILL_HOLES_DEFECT_FILLED={defect_to_fill}")
+
+        # Stage 2.6 — Laplacian smooth around the just-filled patches.
+        # The newly-added faces (indices ≥ faces_before) plus their
+        # 1-ring vertex neighbours get a small Laplacian relaxation so
+        # the patch transitions blend with surrounding curvature instead
+        # of reading as a flat triangle bandage.
+        smooth_verts_count = 0
+        if args.fill_holes_smooth and faces_added > 0:
+            bm = bmesh.new()
+            bm.from_mesh(joined.data)
+            bm.faces.ensure_lookup_table()
+            bm.verts.ensure_lookup_table()
+            new_face_indices = range(faces_before, len(bm.faces))
+            smooth_set = set()
+            for fi in new_face_indices:
+                if fi >= len(bm.faces):
+                    continue
+                for v in bm.faces[fi].verts:
+                    smooth_set.add(v)
+                    for e in v.link_edges:
+                        other = e.other_vert(v)
+                        if other is not None:
+                            smooth_set.add(other)
+            smooth_verts = list(smooth_set)
+            smooth_verts_count = len(smooth_verts)
+            if smooth_verts:
+                for _ in range(int(args.fill_holes_smooth_iter)):
+                    try:
+                        bmesh.ops.smooth_vert(
+                            bm,
+                            verts=smooth_verts,
+                            factor=float(args.fill_holes_smooth_factor),
+                            use_axis_x=True,
+                            use_axis_y=True,
+                            use_axis_z=True,
+                        )
+                    except (RuntimeError, ValueError) as e:
+                        print(
+                            f"WARN: smooth_vert (boundary smoothing) failed: {e}",
+                            file=sys.stderr,
+                        )
+                        break
+                bm.to_mesh(joined.data)
+            bm.free()
+        print(f"DIAMESH_FILL_HOLES_SMOOTH_VERTS={smooth_verts_count}")
 
     # Output stats
     out_faces = len(joined.data.polygons)

@@ -142,6 +142,9 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
         weld_tolerance_frac=args.weld_tolerance_frac,
         weld_tolerance_abs=args.weld_tolerance_abs,
         fix_non_manifold=args.fix_non_manifold,
+        fill_holes_smooth=args.fill_holes_smooth,
+        fill_holes_smooth_iter=args.fill_holes_smooth_iter,
+        fill_holes_smooth_factor=args.fill_holes_smooth_factor,
     )
     print(f"reduced: {args.file}")
     for k, v in metrics.items():
@@ -311,6 +314,26 @@ def main(argv: list[str] | None = None) -> int:
              "assemblies intentionally share 3-patch junctions. Turn on "
              "when post-reduce mesh has shading artifacts or boolean "
              "failures, or when `diamesh diagnose` reports non_manifold > 0.",
+    )
+    p_reduce.add_argument(
+        "--fill-holes-smooth",
+        action="store_true",
+        help="(blender backend) After --auto-fill-holes, run Laplacian "
+             "smoothing on the patched faces and their 1-ring neighbours "
+             "so patches blend into surrounding curvature instead of "
+             "reading as flat triangle bandages.",
+    )
+    p_reduce.add_argument(
+        "--fill-holes-smooth-iter",
+        type=int,
+        default=2,
+        help="Iterations for --fill-holes-smooth. Default 2 (subtle).",
+    )
+    p_reduce.add_argument(
+        "--fill-holes-smooth-factor",
+        type=float,
+        default=0.5,
+        help="Per-iteration relaxation strength in (0, 1]. Default 0.5.",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 
