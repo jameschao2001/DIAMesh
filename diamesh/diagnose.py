@@ -84,6 +84,40 @@ def _count_inverted_normals(mesh: trimesh.Trimesh) -> int:
         return -1
 
 
+def _count_self_intersections(mesh: trimesh.Trimesh) -> int:
+    """Count faces that self-intersect another face on the same mesh.
+
+    Uses pymeshlab's ``compute_selection_by_self_intersections_per_face``
+    filter which exposes the result as a per-face boolean selection.
+    pymeshlab is an optional dependency — returns ``-2`` (= "N/A,
+    pymeshlab not installed") when missing, ``-1`` for runtime failures.
+
+    DIAMesh does *not* attempt to fix self-intersections — proper repair
+    requires a boolean-union remesh that destroys UVs/materials, which
+    contradicts the "preserve materials" production constraint.
+    Operators should fix self-intersection at CAD export instead.
+    """
+    if mesh.faces.shape[0] == 0:
+        return 0
+    try:
+        import pymeshlab
+    except ImportError:
+        return -2
+    try:
+        ms = pymeshlab.MeshSet()
+        ms.add_mesh(
+            pymeshlab.Mesh(
+                vertex_matrix=mesh.vertices.astype(np.float64),
+                face_matrix=mesh.faces.astype(np.int32),
+            )
+        )
+        ms.apply_filter("compute_selection_by_self_intersections_per_face")
+        sel = ms.current_mesh().face_selection_array()
+        return int(np.sum(sel))
+    except Exception:
+        return -1
+
+
 def diagnose_mesh(
     path: str | Path,
     area_eps: float = 1.0e-12,
@@ -139,6 +173,7 @@ def diagnose_mesh(
     largest = island_face_counts[:n_top_islands]
 
     n_inverted = _count_inverted_normals(m)
+    n_self_intersect = _count_self_intersections(m)
 
     return {
         "face_count": n_faces,
@@ -154,5 +189,10 @@ def diagnose_mesh(
         "inverted_normals": n_inverted,
         "inverted_normals_pct": (
             100.0 * n_inverted / max(n_faces, 1) if n_inverted >= 0 else float("nan")
+        ),
+        "self_intersect_faces": n_self_intersect,
+        "self_intersect_pct": (
+            100.0 * n_self_intersect / max(n_faces, 1)
+            if n_self_intersect >= 0 else float("nan")
         ),
     }

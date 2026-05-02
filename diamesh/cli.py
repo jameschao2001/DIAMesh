@@ -78,6 +78,18 @@ def _cmd_diagnose(args: argparse.Namespace) -> int:
             print("       *unifies* winding, it does not flip an entire part outward.")
     else:
         print("  inverted_normals:     (detection failed - ray engine missing or empty mesh)")
+
+    si = metrics["self_intersect_faces"]
+    if si == -2:
+        print("  self_intersect_faces: (skipped - pymeshlab not installed; pip install pymeshlab)")
+    elif si == -1:
+        print("  self_intersect_faces: (detection failed - pymeshlab error)")
+    else:
+        print(f"  self_intersect_faces: {si}  ({metrics['self_intersect_pct']:.2f}% of faces)")
+        if si > 0:
+            print("    => DIAMesh does NOT auto-fix self-intersection: proper repair")
+            print("       (boolean-union remesh) destroys UVs/materials. Fix at CAD")
+            print("       export, or accept it as a visual artifact for LOD use.")
     return 0
 
 
