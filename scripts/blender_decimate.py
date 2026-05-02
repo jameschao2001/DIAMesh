@@ -23,6 +23,9 @@ Pipeline (single mesh, multi-material approach for industrial CAD LOD):
      B. dissolve_degenerate (zero-area sliver triangles)
      C. delete loose verts/edges (kills floating-fragment sources)
      D. mark sharp edges by dihedral (so delimit SHARP fires)
+        AND mark every boundary edge (1-face edge) sharp so COLLAPSE
+        does not destroy boundaries — eliminating most decimation-
+        induced holes at the source rather than patching them after.
      E. triangulate (uniform topology for COLLAPSE)
 4. Stage 1 — DISSOLVE modifier (planar merge, 5° threshold).
 5. Stage 2 — COLLAPSE modifier (target ratio, delimit MATERIAL/SHARP/SEAM/UV).
@@ -472,10 +475,19 @@ def _repair(obj, weld_dist: float, sharp_angle_rad: float, degen_dist: float):
         bm, faces=bm.faces[:], quad_method="BEAUTY", ngon_method="BEAUTY"
     )
 
-    # D. Mark sharp by dihedral angle
+    # D. Mark sharp by dihedral angle AND on every boundary edge.
+    # Boundary edges have only 1 adjacent face — without explicit
+    # protection, COLLAPSE happily kills them, opening new holes that
+    # we then have to patch with --auto-fill-holes. Marking them sharp
+    # lets `delimit={SHARP}` in the COLLAPSE modifier preserve them.
     sharp_marked = 0
+    boundary_marked = 0
     for edge in bm.edges:
-        if len(edge.link_faces) == 2:
+        n_faces = len(edge.link_faces)
+        if n_faces == 1:
+            edge.smooth = False
+            boundary_marked += 1
+        elif n_faces == 2:
             try:
                 if edge.calc_face_angle() > sharp_angle_rad:
                     edge.smooth = False
@@ -496,6 +508,7 @@ def _repair(obj, weld_dist: float, sharp_angle_rad: float, degen_dist: float):
         "loose_edges": len(loose_e),
         "degen_edges": max(0, n_edges_before - n_edges_after - len(loose_e)),
         "sharp_marked": sharp_marked,
+        "boundary_marked": boundary_marked,
     }
 
 
@@ -546,6 +559,7 @@ def main() -> int:
     print(f"DIAMESH_REPAIR_LOOSE_EDGES={repair['loose_edges']}")
     print(f"DIAMESH_REPAIR_DEGEN_EDGES={repair['degen_edges']}")
     print(f"DIAMESH_REPAIR_SHARP_MARKED={repair['sharp_marked']}")
+    print(f"DIAMESH_REPAIR_BOUNDARY_MARKED={repair['boundary_marked']}")
 
     # Stage 0.5 — distance-based island cull (LOD-friendly, preferred)
     cull_islands, cull_faces = _cull_disjoint_islands(
