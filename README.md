@@ -37,6 +37,24 @@ The `pyrender/` folder is an **internalized copy** of pyrender — DIAMesh treat
 pip install -e .
 ```
 
+### Platform-specific vendor binaries
+
+Windows users get FBX2glTF + Assimp shipped in the repo and can use the
+tool immediately. Linux / macOS users run a one-time setup that
+auto-downloads the equivalent binaries:
+
+```bash
+python scripts/setup_vendor.py
+```
+
+The script downloads the right FBX2glTF release asset and the right
+Assimp shared library for the host platform (Linux x64, macOS x64,
+or macOS arm64) into `vendor/fbx2gltf/` and `vendor/assimp/`. Idempotent.
+
+Blender Portable is **not** auto-downloaded (size + licence). All three
+platforms get a manual placement step — see
+[`vendor/BLENDER_SETUP.md`](vendor/BLENDER_SETUP.md).
+
 Dependencies (auto-installed from `pyproject.toml`):
 - numpy, pillow, pyglet<2, pyopengl, networkx, scipy, freetype-py, imageio, six, trimesh
 - pyassimp (for FBX loading via assimp)

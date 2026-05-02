@@ -44,3 +44,13 @@ outputs/
 # the directory exists in fresh clones.
 vendor/blender/*
 !vendor/blender/.gitkeep
+
+# Vendor: Linux / macOS shared binaries downloaded by setup_vendor.py.
+# Windows .exe / .dll are committed (small, common case); other-OS
+# artefacts download on demand to avoid bloating the repo.
+vendor/fbx2gltf/fbx2gltf
+vendor/assimp/*.so
+vendor/assimp/*.so.*
+vendor/assimp/*.dylib
+vendor/assimp/*.dylib.*
+vendor/assimp/Release/
