@@ -144,6 +144,7 @@ def _reduce_blender(
     fill_holes_design_circularity: float = 0.85,
     weld_tolerance_frac: float = 5.0e-5,
     weld_tolerance_abs: float | None = None,
+    fix_non_manifold: bool = False,
 ) -> dict[str, int | float]:
     """Decimate via Blender headless — preserves materials, textures, hierarchy.
 
@@ -196,6 +197,8 @@ def _reduce_blender(
     cmd += ["--weld-tolerance-frac", str(float(weld_tolerance_frac))]
     if weld_tolerance_abs is not None:
         cmd += ["--weld-tolerance-abs", str(float(weld_tolerance_abs))]
+    if fix_non_manifold:
+        cmd += ["--fix-non-manifold"]
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -263,6 +266,7 @@ def reduce_mesh(
     fill_holes_design_circularity: float = 0.85,
     weld_tolerance_frac: float = 5.0e-5,
     weld_tolerance_abs: float | None = None,
+    fix_non_manifold: bool = False,
 ) -> dict[str, int | float]:
     """Reduce a mesh file's triangle count.
 
@@ -332,6 +336,7 @@ def reduce_mesh(
             fill_holes_design_circularity=fill_holes_design_circularity,
             weld_tolerance_frac=weld_tolerance_frac,
             weld_tolerance_abs=weld_tolerance_abs,
+            fix_non_manifold=fix_non_manifold,
         )
 
     meshes = load_fbx(input_path)

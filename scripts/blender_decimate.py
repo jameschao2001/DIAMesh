@@ -140,6 +140,14 @@ def parse_args() -> argparse.Namespace:
         help="Absolute weld tolerance in mesh units (mm for CAD). "
              "When set, overrides --weld-tolerance-frac.",
     )
+    p.add_argument(
+        "--fix-non-manifold",
+        action="store_true",
+        help="In Stage 0, dissolve any edges shared by 3+ faces "
+             "(non-manifold). Off by default since some CAD assemblies "
+             "intentionally share 3-patch junctions; turn on when the "
+             "post-reduce mesh has shading artifacts or boolean failures.",
+    )
     return p.parse_args(argv)
 
 
@@ -456,12 +464,18 @@ def _drop_small_islands(obj, min_faces: int):
     return removed_islands, faces_removed
 
 
-def _repair(obj, weld_dist: float, sharp_angle_rad: float, degen_dist: float):
+def _repair(
+    obj,
+    weld_dist: float,
+    sharp_angle_rad: float,
+    degen_dist: float,
+    fix_non_manifold: bool = False,
+):
     """Run the full Stage-0 mesh repair sweep on a single object.
 
     Returns a dict with the count of each repair operation. Operations
     in order: recalc normals, weld, dissolve degenerate, drop loose,
-    triangulate, mark sharp.
+    triangulate, mark sharp + boundary, optional non-manifold fix.
     """
     n_verts_before = len(obj.data.vertices)
     n_edges_before = len(obj.data.edges)
@@ -512,6 +526,27 @@ def _repair(obj, weld_dist: float, sharp_angle_rad: float, degen_dist: float):
             except ValueError:
                 pass
 
+    # F. Optional non-manifold edge fix.
+    # An edge shared by ≥3 faces is non-manifold — common in CAD when
+    # different patches meet at a shared boundary or after aggressive
+    # collapse folds two surfaces together. We only act on user opt-in
+    # because dissolving these edges can also collapse legitimate
+    # patch junctions; for diagnose-only callers the default off
+    # preserves backward compatibility.
+    non_manifold_initial = sum(
+        1 for e in bm.edges if len(e.link_faces) > 2
+    )
+    non_manifold_fixed = 0
+    if fix_non_manifold and non_manifold_initial > 0:
+        nm_edges = [e for e in bm.edges if len(e.link_faces) > 2]
+        try:
+            bmesh.ops.dissolve_edges(bm, edges=nm_edges, use_verts=False)
+            non_manifold_fixed = non_manifold_initial - sum(
+                1 for e in bm.edges if len(e.link_faces) > 2
+            )
+        except (RuntimeError, ValueError) as e:
+            print(f"WARN: dissolve_edges (non-manifold) failed: {e}", file=sys.stderr)
+
     bm.to_mesh(obj.data)
     bm.free()
     obj.data.update()
@@ -526,6 +561,8 @@ def _repair(obj, weld_dist: float, sharp_angle_rad: float, degen_dist: float):
         "degen_edges": max(0, n_edges_before - n_edges_after - len(loose_e)),
         "sharp_marked": sharp_marked,
         "boundary_marked": boundary_marked,
+        "non_manifold_initial": non_manifold_initial,
+        "non_manifold_fixed": non_manifold_fixed,
     }
 
 
@@ -592,13 +629,21 @@ def main() -> int:
     print(f"DIAMESH_WELD_SOURCE={weld_source}")
 
     # Stage 0 — full repair sweep on the joined mesh
-    repair = _repair(joined, weld_dist, sharp_angle_rad, DEGEN_DIST)
+    repair = _repair(
+        joined,
+        weld_dist,
+        sharp_angle_rad,
+        DEGEN_DIST,
+        fix_non_manifold=args.fix_non_manifold,
+    )
     print(f"DIAMESH_REPAIR_WELDED_VERTS={repair['welded_verts']}")
     print(f"DIAMESH_REPAIR_LOOSE_VERTS={repair['loose_verts']}")
     print(f"DIAMESH_REPAIR_LOOSE_EDGES={repair['loose_edges']}")
     print(f"DIAMESH_REPAIR_DEGEN_EDGES={repair['degen_edges']}")
     print(f"DIAMESH_REPAIR_SHARP_MARKED={repair['sharp_marked']}")
     print(f"DIAMESH_REPAIR_BOUNDARY_MARKED={repair['boundary_marked']}")
+    print(f"DIAMESH_REPAIR_NON_MANIFOLD_INITIAL={repair['non_manifold_initial']}")
+    print(f"DIAMESH_REPAIR_NON_MANIFOLD_FIXED={repair['non_manifold_fixed']}")
 
     # Stage 0.5 — distance-based island cull (LOD-friendly, preferred)
     cull_islands, cull_faces = _cull_disjoint_islands(

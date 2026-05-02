@@ -141,6 +141,7 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
         fill_holes_design_circularity=args.fill_holes_design_circularity,
         weld_tolerance_frac=args.weld_tolerance_frac,
         weld_tolerance_abs=args.weld_tolerance_abs,
+        fix_non_manifold=args.fix_non_manifold,
     )
     print(f"reduced: {args.file}")
     for k, v in metrics.items():
@@ -301,6 +302,15 @@ def main(argv: list[str] | None = None) -> int:
         help="(blender backend) Override weld tolerance with an absolute "
              "value (mesh units, mm for CAD). When set, overrides "
              "--weld-tolerance-frac.",
+    )
+    p_reduce.add_argument(
+        "--fix-non-manifold",
+        action="store_true",
+        help="(blender backend) Dissolve any edges shared by 3+ faces "
+             "during Stage 0 mesh repair. Off by default — some CAD "
+             "assemblies intentionally share 3-patch junctions. Turn on "
+             "when post-reduce mesh has shading artifacts or boolean "
+             "failures, or when `diamesh diagnose` reports non_manifold > 0.",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 
