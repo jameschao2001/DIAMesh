@@ -139,6 +139,9 @@ def _reduce_blender(
     cull_anchor_count: int = 10,
     auto_fill_holes: bool = False,
     fill_holes_max_sides: int = 8,
+    fill_holes_skip_design: bool = False,
+    fill_holes_design_min_radius_frac: float = 0.005,
+    fill_holes_design_circularity: float = 0.85,
 ) -> dict[str, int | float]:
     """Decimate via Blender headless — preserves materials, textures, hierarchy.
 
@@ -178,6 +181,16 @@ def _reduce_blender(
     if auto_fill_holes:
         cmd += ["--auto-fill-holes"]
         cmd += ["--fill-holes-max-sides", str(int(fill_holes_max_sides))]
+        if fill_holes_skip_design:
+            cmd += ["--fill-holes-skip-design"]
+            cmd += [
+                "--fill-holes-design-min-radius-frac",
+                str(float(fill_holes_design_min_radius_frac)),
+            ]
+            cmd += [
+                "--fill-holes-design-circularity",
+                str(float(fill_holes_design_circularity)),
+            ]
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -240,6 +253,9 @@ def reduce_mesh(
     cull_anchor_count: int = 10,
     auto_fill_holes: bool = False,
     fill_holes_max_sides: int = 8,
+    fill_holes_skip_design: bool = False,
+    fill_holes_design_min_radius_frac: float = 0.005,
+    fill_holes_design_circularity: float = 0.85,
 ) -> dict[str, int | float]:
     """Reduce a mesh file's triangle count.
 
@@ -304,6 +320,9 @@ def reduce_mesh(
             cull_anchor_count=cull_anchor_count,
             auto_fill_holes=auto_fill_holes,
             fill_holes_max_sides=fill_holes_max_sides,
+            fill_holes_skip_design=fill_holes_skip_design,
+            fill_holes_design_min_radius_frac=fill_holes_design_min_radius_frac,
+            fill_holes_design_circularity=fill_holes_design_circularity,
         )
 
     meshes = load_fbx(input_path)

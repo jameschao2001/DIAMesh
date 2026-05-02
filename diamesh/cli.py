@@ -2,9 +2,11 @@
 
 Subcommands:
 
-* ``diamesh view <file.fbx>`` — open an interactive viewer (Phase 1).
-* ``diamesh reduce ...`` — placeholder for Phase 2 mesh reduction.
+* ``diamesh view <file.fbx>`` — open an interactive viewer.
 * ``diamesh info <file.fbx>`` — print mesh statistics without rendering.
+* ``diamesh reduce ...`` — auto quadric mesh reduction.
+* ``diamesh diff <orig> <repaired>`` — geometric deviation metrics
+  (Hausdorff / Chamfer / volume / normal deviation) between two meshes.
 
 Author: James Chao, Homi (AI Agent)
 Version: 0.1.0
@@ -41,6 +43,40 @@ def _cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_diff(args: argparse.Namespace) -> int:
+    from diamesh.diff import diff_meshes
+
+    metrics = diff_meshes(
+        original_path=args.original,
+        repaired_path=args.repaired,
+        n_samples=args.n_samples,
+        seed=args.seed,
+    )
+    diag = metrics["bbox_diagonal"]
+    print(f"diff: {args.original}  →  {args.repaired}")
+    print(f"  bbox_diagonal:        {diag:.4f}  (units of input)")
+    print(f"  orig_faces:           {metrics['orig_faces']}")
+    print(f"  repaired_faces:       {metrics['repaired_faces']}")
+    print(f"  n_samples:            {metrics['n_samples']}")
+    print()
+    print(f"  hausdorff_max:        {metrics['hausdorff_max']:.6f}  "
+          f"({metrics['hausdorff_max_pct_of_diag']:.4f}% of diagonal)")
+    print(f"    o→r:                {metrics['hausdorff_o2r']:.6f}")
+    print(f"    r→o:                {metrics['hausdorff_r2o']:.6f}")
+    print(f"  chamfer:              {metrics['chamfer']:.6f}  "
+          f"({metrics['chamfer_pct_of_diag']:.4f}% of diagonal)")
+    print(f"  mean_normal_dev_deg:  {metrics['mean_normal_dev_deg']:.4f}°")
+    print()
+    if metrics['volume_orig'] == metrics['volume_orig']:  # not NaN
+        print(f"  volume_orig:          {metrics['volume_orig']:.4f}")
+        print(f"  volume_repaired:      {metrics['volume_repaired']:.4f}")
+        print(f"  volume_diff_abs:      {metrics['volume_diff_abs']:.4f}")
+        print(f"  volume_diff_pct:      {metrics['volume_diff_pct']:.4f}%")
+    else:
+        print("  volume_*: NaN (one or both meshes non-watertight)")
+    return 0
+
+
 def _cmd_reduce(args: argparse.Namespace) -> int:
     from diamesh.reducer import reduce_mesh
 
@@ -62,6 +98,9 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
         cull_anchor_count=args.cull_anchor_count,
         auto_fill_holes=args.auto_fill_holes,
         fill_holes_max_sides=args.fill_holes_max_sides,
+        fill_holes_skip_design=args.fill_holes_skip_design,
+        fill_holes_design_min_radius_frac=args.fill_holes_design_min_radius_frac,
+        fill_holes_design_circularity=args.fill_holes_design_circularity,
     )
     print(f"reduced: {args.file}")
     for k, v in metrics.items():
@@ -86,6 +125,23 @@ def main(argv: list[str] | None = None) -> int:
     p_info = sub.add_parser("info", help="print mesh statistics for an FBX")
     p_info.add_argument("file", help="path to .fbx file")
     p_info.set_defaults(func=_cmd_info)
+
+    p_diff = sub.add_parser(
+        "diff",
+        help="geometric deviation between two meshes (Hausdorff / Chamfer "
+             "/ volume / normal deviation)",
+    )
+    p_diff.add_argument("original", help="reference mesh (e.g., original CAD FBX)")
+    p_diff.add_argument("repaired", help="mesh to compare (e.g., LOD output)")
+    p_diff.add_argument(
+        "--n-samples", type=int, default=50000,
+        help="surface samples per mesh for distance estimation (default 50000)",
+    )
+    p_diff.add_argument(
+        "--seed", type=int, default=42,
+        help="RNG seed for reproducible sampling (default 42)",
+    )
+    p_diff.set_defaults(func=_cmd_diff)
 
     p_reduce = sub.add_parser("reduce", help="auto quadric mesh reduction")
     p_reduce.add_argument("file", help="path to .fbx (or other trimesh-supported) file")
@@ -151,6 +207,31 @@ def main(argv: list[str] | None = None) -> int:
         help="Max boundary loop length (edges) for --auto-fill-holes. "
              "Default 8 covers most CAD seam holes; lower is conservative, "
              "higher caps even open surfaces.",
+    )
+    p_reduce.add_argument(
+        "--fill-holes-skip-design",
+        action="store_true",
+        help="(blender backend) Classify each boundary loop and SKIP "
+             "filling design holes (vents, fastener holes, line slots — "
+             "circular & regular & dimensionally significant). Defect "
+             "cracks (irregular, small) are still filled. Avoids "
+             "accidentally capping ventilation grilles or screw holes.",
+    )
+    p_reduce.add_argument(
+        "--fill-holes-design-min-radius-frac",
+        type=float,
+        default=0.005,
+        help="With --fill-holes-skip-design: min loop radius (as fraction "
+             "of mesh bbox diagonal) for design-hole classification. "
+             "Smaller loops always treated as defects. Default 0.005.",
+    )
+    p_reduce.add_argument(
+        "--fill-holes-design-circularity",
+        type=float,
+        default=0.85,
+        help="With --fill-holes-skip-design: circularity threshold (0-1) "
+             "for design-hole classification. 1.0 = perfect circle. "
+             "Default 0.85.",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 

@@ -25,7 +25,7 @@ Pipeline (single mesh, multi-material approach for industrial CAD LOD):
      D. mark sharp edges by dihedral (so delimit SHARP fires)
      E. triangulate (uniform topology for COLLAPSE)
 4. Stage 1 — DISSOLVE modifier (planar merge, 5° threshold).
-5. Stage 2 — COLLAPSE modifier (target ratio, delimit MATERIAL/SHARP/SEAM).
+5. Stage 2 — COLLAPSE modifier (target ratio, delimit MATERIAL/SHARP/SEAM/UV).
 6. Export FBX with embedded textures, ``COPY`` path mode.
 7. Emit ``DIAMESH_*=…`` metric sentinel lines on stdout for the parent
    Python process to scrape.
@@ -97,7 +97,124 @@ def parse_args() -> argparse.Namespace:
              "fills aggressively at the risk of capping intentionally open "
              "surfaces.",
     )
+    p.add_argument(
+        "--fill-holes-skip-design",
+        action="store_true",
+        help="Before fill_holes, classify each boundary loop as a 'design "
+             "hole' (circular, regular, large enough — vents, fastener "
+             "holes, line slots) vs a 'defect crack' (irregular, small). "
+             "Skip filling design holes so vents/screw holes survive.",
+    )
+    p.add_argument(
+        "--fill-holes-design-min-radius-frac",
+        type=float,
+        default=0.005,
+        help="Min loop radius (as fraction of mesh bbox diagonal) for "
+             "design-hole classification. Smaller loops always treated as "
+             "defects. Default 0.005 (=0.5%% of diagonal).",
+    )
+    p.add_argument(
+        "--fill-holes-design-circularity",
+        type=float,
+        default=0.85,
+        help="Circularity threshold (0-1) for design-hole classification. "
+             "1.0 = perfect circle. Default 0.85.",
+    )
     return p.parse_args(argv)
+
+
+def _group_boundary_edges_into_loops(bm):
+    """Group boundary edges (edges with exactly one adjacent face) into loops.
+
+    Uses union-find by shared vertex — every two boundary edges that
+    share a vertex end up in the same group. For simple closed cycles
+    (the dominant case in CAD seams) each group is one closed loop.
+
+    Returns a list of lists of ``BMEdge``.
+    """
+    boundary = [e for e in bm.edges if e.is_boundary]
+    if not boundary:
+        return []
+
+    parent = {e.index: e.index for e in boundary}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    v_to_edges: dict[int, list] = {}
+    for e in boundary:
+        for v in e.verts:
+            v_to_edges.setdefault(v.index, []).append(e)
+
+    for shared in v_to_edges.values():
+        if len(shared) >= 2:
+            base = shared[0].index
+            for other in shared[1:]:
+                union(base, other.index)
+
+    groups: dict[int, list] = {}
+    for e in boundary:
+        groups.setdefault(find(e.index), []).append(e)
+    return list(groups.values())
+
+
+def _classify_boundary_loop(
+    loop_edges,
+    mesh_diagonal: float,
+    min_radius_frac: float,
+    circularity_threshold: float,
+) -> str:
+    """Decide if a boundary loop is a design hole (skip fill) or a defect.
+
+    Design hole criteria (must satisfy both):
+      * Mean radius from loop centroid ≥ ``min_radius_frac × mesh_diagonal``.
+      * Circularity = ``1 - std_radius / mean_radius`` ≥ ``circularity_threshold``.
+
+    Implementation: PCA on loop vertices to find best-fit plane, project
+    onto plane, measure radii from centroid. Pure numpy — no SciPy.
+
+    Returns ``"design"`` or ``"defect"``.
+    """
+    seen = set()
+    pts = []
+    for e in loop_edges:
+        for v in e.verts:
+            if v.index not in seen:
+                seen.add(v.index)
+                pts.append((v.co.x, v.co.y, v.co.z))
+    if len(pts) < 4:
+        return "defect"  # too small to be a design feature
+
+    import numpy as np
+
+    P = np.asarray(pts, dtype=np.float64)
+    centroid = P.mean(axis=0)
+    Q = P - centroid
+
+    # PCA: smallest eigenvector ≈ plane normal; largest two ≈ in-plane basis
+    cov = Q.T @ Q
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    basis_u = eigvecs[:, 2]
+    basis_v = eigvecs[:, 1]
+
+    P2 = np.column_stack([Q @ basis_u, Q @ basis_v])
+    radii = np.linalg.norm(P2, axis=1)
+    mean_r = float(radii.mean())
+
+    if mean_r < min_radius_frac * mesh_diagonal:
+        return "defect"
+
+    std_r = float(radii.std())
+    circularity = 1.0 - std_r / max(mean_r, 1e-9)
+    return "design" if circularity >= circularity_threshold else "defect"
 
 
 def _mesh_objects():
@@ -465,7 +582,7 @@ def main() -> int:
         col.decimate_type = "COLLAPSE"
         col.ratio = max(0.001, min(1.0, target / n_after_dissolve))
         col.use_collapse_triangulate = True
-        col.delimit = {"MATERIAL", "SHARP", "SEAM"}
+        col.delimit = {"MATERIAL", "SHARP", "SEAM", "UV"}
         try:
             bpy.ops.object.modifier_apply(modifier=col.name)
         except RuntimeError as e:
@@ -476,23 +593,90 @@ def main() -> int:
     if args.auto_fill_holes:
         edges_before = len(joined.data.edges)
         faces_before = len(joined.data.polygons)
-        try:
-            bpy.context.view_layer.objects.active = joined
-            bpy.ops.object.mode_set(mode="EDIT")
-            bpy.ops.mesh.select_all(action="SELECT")
-            bpy.ops.mesh.fill_holes(sides=int(args.fill_holes_max_sides))
-            bpy.ops.object.mode_set(mode="OBJECT")
-        except RuntimeError as e:
-            print(f"WARN: fill_holes failed: {e}", file=sys.stderr)
+        design_skipped = 0
+        defect_to_fill = 0
+
+        # Pre-classify boundary loops if the user asked us to preserve
+        # design holes (vents, fastener holes, slots, etc.).
+        if args.fill_holes_skip_design:
+            # Mesh diagonal in object-local coords (same coord system as
+            # bmesh vertex .co). Object scale is identity post-import.
+            xs = [v.co.x for v in joined.data.vertices]
+            ys = [v.co.y for v in joined.data.vertices]
+            zs = [v.co.z for v in joined.data.vertices]
+            if xs:
+                dx = max(xs) - min(xs)
+                dy = max(ys) - min(ys)
+                dz = max(zs) - min(zs)
+                mesh_diagonal = math.sqrt(dx * dx + dy * dy + dz * dz)
+            else:
+                mesh_diagonal = 0.0
+
+            bm = bmesh.new()
+            bm.from_mesh(joined.data)
+            bm.edges.ensure_lookup_table()
+            bm.verts.ensure_lookup_table()
+
+            for e in bm.edges:
+                e.select = False
+            for v in bm.verts:
+                v.select = False
+
+            loops = _group_boundary_edges_into_loops(bm)
+            for loop_edges in loops:
+                cls = _classify_boundary_loop(
+                    loop_edges,
+                    mesh_diagonal,
+                    args.fill_holes_design_min_radius_frac,
+                    args.fill_holes_design_circularity,
+                )
+                if cls == "defect":
+                    defect_to_fill += 1
+                    for e in loop_edges:
+                        e.select = True
+                        for v in e.verts:
+                            v.select = True
+                else:
+                    design_skipped += 1
+
+            bm.to_mesh(joined.data)
+            bm.free()
+
             try:
+                bpy.context.view_layer.objects.active = joined
+                bpy.ops.object.mode_set(mode="EDIT")
+                # Selection was set above on mesh data; do NOT select_all.
+                bpy.ops.mesh.fill_holes(sides=int(args.fill_holes_max_sides))
                 bpy.ops.object.mode_set(mode="OBJECT")
-            except RuntimeError:
-                pass
+            except RuntimeError as e:
+                print(f"WARN: fill_holes (selective) failed: {e}", file=sys.stderr)
+                try:
+                    bpy.ops.object.mode_set(mode="OBJECT")
+                except RuntimeError:
+                    pass
+        else:
+            # Original blunt behaviour — fill every boundary loop ≤ N edges.
+            try:
+                bpy.context.view_layer.objects.active = joined
+                bpy.ops.object.mode_set(mode="EDIT")
+                bpy.ops.mesh.select_all(action="SELECT")
+                bpy.ops.mesh.fill_holes(sides=int(args.fill_holes_max_sides))
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except RuntimeError as e:
+                print(f"WARN: fill_holes failed: {e}", file=sys.stderr)
+                try:
+                    bpy.ops.object.mode_set(mode="OBJECT")
+                except RuntimeError:
+                    pass
+
         faces_added = len(joined.data.polygons) - faces_before
         edges_added = len(joined.data.edges) - edges_before
         print(f"DIAMESH_FILL_HOLES_FACES_ADDED={max(0, faces_added)}")
         print(f"DIAMESH_FILL_HOLES_EDGES_ADDED={max(0, edges_added)}")
         print(f"DIAMESH_FILL_HOLES_MAX_SIDES={int(args.fill_holes_max_sides)}")
+        if args.fill_holes_skip_design:
+            print(f"DIAMESH_FILL_HOLES_DESIGN_SKIPPED={design_skipped}")
+            print(f"DIAMESH_FILL_HOLES_DEFECT_FILLED={defect_to_fill}")
 
     # Output stats
     out_faces = len(joined.data.polygons)
