@@ -99,10 +99,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_reduce.add_argument(
         "--backend",
-        choices=["trimesh", "pymeshlab", "blender"],
+        choices=["trimesh", "pymeshlab", "meshoptimizer", "blender"],
         default="trimesh",
         help="reduction backend. trimesh (default) = fast-simplification. "
              "pymeshlab = MeshLab with boundary/normal preservation. "
+             "meshoptimizer = zeux/meshoptimizer (industry-standard, used "
+             "by glTF-Transform / Three.js / Unity); fast and often higher "
+             "quality than fast-simplification but drops materials. "
              "blender = headless Blender (preserves materials, textures, "
              "hierarchy — recommended for FBX-out workflows; requires "
              "vendor/blender/blender.exe or BLENDER_EXE env var)",

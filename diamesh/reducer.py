@@ -313,6 +313,8 @@ def reduce_mesh(
         reduced = combined.simplify_quadric_decimation(face_count=target_faces)
     elif backend == "pymeshlab":
         reduced = _reduce_pymeshlab(combined, target_faces)
+    elif backend == "meshoptimizer":
+        reduced = _reduce_meshoptimizer(combined, target_faces)
     else:
         raise NotImplementedError(f"unknown backend: {backend!r}")
 
@@ -355,6 +357,46 @@ def _export_fbx_via_assimp(mesh: trimesh.Trimesh, output_path: Path) -> None:
         raise RuntimeError(
             f"FBX export reported success but produced no file at {output_path}"
         )
+
+
+def _reduce_meshoptimizer(
+    mesh: trimesh.Trimesh, target_faces: int, target_error: float = 1.0
+) -> trimesh.Trimesh:
+    """Quadric edge collapse via zeux/meshoptimizer.
+
+    meshoptimizer is the simplification backend used by glTF-Transform,
+    Three.js, Unity, and Unreal — production-grade quadric edge collapse
+    with cache-friendly output. Faster and often higher visual quality
+    than the trimesh+fast-simplification path on the same target count.
+
+    Materials / texture coordinates are dropped on this path; for
+    textured FBX outputs prefer ``--backend blender``.
+    """
+    import meshoptimizer  # heavy import — defer
+    import numpy as np
+
+    # Merge coincident vertices first — trimesh.load on a GLB often emits
+    # disjoint triangles (each face owns 3 unshared verts). Without this,
+    # quadric edge collapse has no shared topology to work with and
+    # returns the mesh unchanged.
+    welded = mesh.copy()
+    welded.merge_vertices()
+
+    vertices = np.ascontiguousarray(welded.vertices, dtype=np.float32)
+    indices = np.ascontiguousarray(welded.faces.flatten(), dtype=np.uint32)
+
+    target_index_count = max(3, int(target_faces) * 3)
+    destination = np.empty(indices.shape[0], dtype=np.uint32)
+    n_indices_out = meshoptimizer.simplify(
+        destination=destination,
+        indices=indices,
+        vertex_positions=vertices,
+        target_index_count=target_index_count,
+        target_error=float(target_error),
+    )
+
+    new_faces = np.asarray(destination[:n_indices_out], dtype=np.int64).reshape(-1, 3)
+    return trimesh.Trimesh(vertices=welded.vertices, faces=new_faces, process=False)
 
 
 def _reduce_pymeshlab(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
