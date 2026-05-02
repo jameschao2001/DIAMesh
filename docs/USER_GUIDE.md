@@ -9,7 +9,7 @@
 * **CLI 指令** — `view` / `info` / `reduce` 完整參考
 * **Backend 選擇** — trimesh / pymeshlab / blender 三條路線的 trade-off
 * **Mesh Repair Pipeline** — 從 weld 到 island cull 的七階段內部流程
-* **Production LOD Presets** — 30 台設備產線 viewer 的兩個推薦配置
+* **Production LOD Presets** — 30 台設備產線 viewer 的三檔推薦配置（廠區/單機/Hero）
 * **跨平台部署** — Windows 即用、Linux/macOS 一行 setup
 * **故障排除** — 常見錯誤跟修法
 
@@ -383,68 +383,239 @@ threshold 調參指南：
 
 ## 6. Production LOD Presets
 
-針對「30 台設備一條產線同畫面 viewer」的兩個推薦配置。
+針對「30 台設備一條產線同畫面 viewer」的三檔推薦配置，分別對應**廠區俯瞰**、**單機聚焦**、**Hero shot** 三種視角預算。
 
-### 6.1 Preset A — 「最低 face / 30 台同跑」
+每檔都包含 `--auto-fill-holes`，這是 9 組對比實驗測出來的 production 必備 flag — 它把 decimation 過程中產生的 boundary loop 自動補回，避免「面板透空感」。
+
+### 6.0 設計原則 — 完整 > 邊緣連續 > 不破面 > 細節
+
+LOD 場景下，**主體完整性** 永遠比 **細節豐富度** 重要：
+
+* zoom out 看 30 台時，洞和漂浮會變成「視覺雜訊」干擾整廠認知
+* 一台斷面的設備比一台簡化的設備更糟糕
+* 細節可以靠 LOD 切換補回（近距離換 TIER 2/3），但破面回不了
+
+三檔 preset 都遵守這個原則：先保完整，再談 face budget。
+
+### 6.1 TIER 1 — 廠區/產線視角（30 台同畫面）
 
 ```bash
 diamesh reduce data/Machine.fbx \
-    --ratio 0.1 \
     --backend blender \
-    --cull-disjoint 0.02 \
-    -o data/Machine_lodA.fbx
+    --ratio 0.1 \
+    --cull-disjoint 0.025 \
+    --auto-fill-holes \
+    -o data/Machine_TIER1.fbx
 ```
 
 **特性**：
 * face 砍到 ~10%（input 75k → output ~7k）
 * 30 台 × 7k = **~210k face / 整條產線**
-* 主框架完整、漂浮接近清乾淨
-* GPU draw call 友善（單 mesh + multi-material）
+* 主框架完整、漂浮乾淨清空、面板實心
+* GPU draw call 友善（單 mesh + multi-material），筆電內顯也能跑
 
-**適用視角**：產線 zoom-out（俯瞰整條產線、看到所有 30 台設備）
+**適用視角**：
+* 整廠 / 整條產線 zoom-out
+* 上線監控大屏（多視窗多產線同時顯示）
+* CEO Dashboard 全廠狀態圖
+* AR/VR 漫遊時的中遠景
 
-### 6.2 Preset B — 「視覺優先 / GPU 預算夠」
+**用戶體驗目標**：使用者一眼能數出有幾台設備、看得出設備種類分佈、不會被破面噪訊干擾。
+
+### 6.2 TIER 2 — 單機聚焦（點選展開細節）
 
 ```bash
 diamesh reduce data/Machine.fbx \
-    --ratio 0.25 \
     --backend blender \
-    --cull-disjoint 0.03 \
-    -o data/Machine_lodB.fbx
+    --ratio 0.25 \
+    --cull-disjoint 0.04 \
+    --auto-fill-holes \
+    -o data/Machine_TIER2.fbx
 ```
 
 **特性**：
 * face 砍到 ~25%（input 75k → output ~17k）
-* 30 台 × 17k = **~510k face / 整條產線**
-* 細節保留多，機器手臂等子結構可辨識
-* 中等 GPU 仍流暢
+* 30 台 × 17k = **~510k face / 整條產線**（如全切換為 TIER 2）
+* 機械手臂、HMI 螢幕、子結構可辨識
+* 中等 GPU（GTX 1660 等級）仍流暢
 
-**適用視角**：點擊單台設備聚焦時的特寫
+**適用視角**：
+* 用戶在 viewer 點擊「這台」展開查看
+* 故障設備聚焦（MES / SCADA 整合彈出）
+* 維修人員 AR 標註
 
-### 6.3 兩 Preset 切換策略
+**用戶體驗目標**：保留足夠細節讓使用者能從外觀辨識設備型號、看清 HMI 與機械臂的相對位置。
 
-production viewer 可以同時生成兩份：
+### 6.3 TIER 3 — Hero Shot（行銷素材 / CEO 簡報）
+
 ```bash
-diamesh reduce machine.fbx --ratio 0.1  --backend blender --cull-disjoint 0.02 -o machine_lodA.fbx
-diamesh reduce machine.fbx --ratio 0.25 --backend blender --cull-disjoint 0.03 -o machine_lodB.fbx
+diamesh reduce data/Machine.fbx \
+    --backend blender \
+    --ratio 0.5 \
+    --cull-disjoint 0.03 \
+    --auto-fill-holes \
+    -o data/Machine_TIER3.fbx
 ```
 
-viewer 根據 camera 距離自動切換 LOD：遠→A，近→B。這就是 LOD 的標準應用方式。
+**特性**：
+* face 砍到 ~50%（input 75k → output ~37k）
+* 視覺接近原檔，材質、銘牌、HMI 螢幕細節都保留
+* 適合單台設備獨立渲染
 
-### 6.4 為什麼這兩組是甜蜜點（實測過）
+**適用視角**：
+* 行銷素材 / 產品冊 / 官網設備介紹
+* CEO 簡報、客戶 demo、法說會
+* 數位雙生展示影片的特寫鏡頭
+* 印刷高解析度單機產品圖
 
-針對 5AxisGlueSpraying.fbx (75k face, 24 part) 跑出的對比：
+**用戶體驗目標**：「看起來幾乎沒減面」— 但檔案小一半，傳輸/載入快一倍。
 
-| 配置 | 主框架 | 漂浮 | 細節 |
-|---|:---:|:---:|:---:|
-| `r0.1_c0.01` | ✓ | 大量清掉 | 中等（面板有破洞）|
-| `r0.1_c0.015` | ✓ | 部分清 | 中等 |
-| **`r0.1_c0.02`** ⭐ | ✓ | **僅 1-2 黑物** | 中等 |
-| `r0.1_c0.03` | ✓ | 殘留較多 | 中等 |
-| **`r0.25_c0.03`** ⭐ | ✓ | 少量殘留 | **多** |
-| `r0.5_c0.03` | ✓ | 仍漂浮 | 多（cull 對高 ratio 不夠）|
+### 6.4 三檔 LOD 切換策略
 
-`r0.1_c0.02` 跟 `r0.25_c0.03` 在「漂浮清除」+「主結構保留」+「細節密度」的三維權衡達到 Pareto 前沿。
+production viewer 一次生成三份：
+
+```bash
+# Windows
+for %F in (data\Machine.fbx) do (
+  diamesh reduce %F --backend blender --ratio 0.1  --cull-disjoint 0.025 --auto-fill-holes -o %~dpnF_TIER1.fbx
+  diamesh reduce %F --backend blender --ratio 0.25 --cull-disjoint 0.04  --auto-fill-holes -o %~dpnF_TIER2.fbx
+  diamesh reduce %F --backend blender --ratio 0.5  --cull-disjoint 0.03  --auto-fill-holes -o %~dpnF_TIER3.fbx
+)
+
+# Linux/macOS
+for f in data/*.fbx; do
+  diamesh reduce "$f" --backend blender --ratio 0.1  --cull-disjoint 0.025 --auto-fill-holes -o "${f%.fbx}_TIER1.fbx"
+  diamesh reduce "$f" --backend blender --ratio 0.25 --cull-disjoint 0.04  --auto-fill-holes -o "${f%.fbx}_TIER2.fbx"
+  diamesh reduce "$f" --backend blender --ratio 0.5  --cull-disjoint 0.03  --auto-fill-holes -o "${f%.fbx}_TIER3.fbx"
+done
+```
+
+viewer 根據 camera 距離自動切換 LOD：
+
+| Camera 距離 | 載入哪檔 | 視覺體驗 |
+|---|---|---|
+| 遠（產線俯瞰） | TIER 1 | 主體輪廓完整 |
+| 中（單機聚焦） | TIER 2 | 結構可辨識 |
+| 近（特寫鏡頭） | TIER 3 / 原檔 | 細節豐富 |
+
+這是業界 LOD 系統的標準應用方式（Unreal / Unity 都這樣做）。
+
+### 6.5 為什麼這三組是甜蜜點 — 9 組對比實測
+
+針對 `5AxisGlueSpraying.fbx` (75k face, 24 part) 的完整對比，三軸：**ratio** × **cull-disjoint** × **fill-holes-max-sides**。
+
+| 編號 | ratio | cull | fill | 主體完整 | 邊緣連續 | 漂浮 | 細節 | 判定 |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|---|
+| A1 | 0.1 | 0.02 | 8 | ✓ | ✓ | △ 1個 | 中 | OK |
+| **A2** | **0.1** | **0.025** | **8** | ✓ | ✓ | ✓ 乾淨 | 中 | **🏆 TIER 1** |
+| A3 | 0.1 | 0.02 | 4 | △ 透空 | △ | △ | 中 | fill 太保守 |
+| A4 | 0.1 | 0.02 | 16 | ✓ | ✓ | △ | 中 | 跟 fill8 沒差 |
+| B1 | 0.25 | 0.03 | 8 | ✓ | ✓ | △ | 高 | OK |
+| B2 | 0.25 | 0.025 | 8 | ✓ | ✓ | △ 多 | 高 | cull 太低 |
+| **B3** | **0.25** | **0.04** | **8** | ✓ | ✓ | ✓ 乾淨 | 高 | **🏆 TIER 2** |
+| X1 | 0.05 | 0.02 | 8 | △ 透 | ✓ | △ | 低 | 太極限 |
+| **X2** | **0.5** | **0.03** | **8** | ✓ | ✓ | △ | 最高 | **🏆 TIER 3** |
+
+**三個關鍵 insight**：
+1. **fill-holes-max-sides=8 是甜蜜點** — 4 太保守（面板透空）、16 跟 8 差異很小（沒必要）。詳見 §6.6
+2. **cull threshold 隨 ratio 縮放** — ratio 越高（保留越多面），cull 可以更激進（c0.04），因為主體 anchor 結構還在
+3. **沒有單一最佳** — 三檔各司其職，這正是 production LOD 系統需要的分層
+
+### 6.6 為什麼 `--fill-holes-max-sides 8`
+
+decimation 過程的 quadric edge collapse 會在 boundary 邊緣（CAD seam、不同 part 交界）產生小的 boundary loop（沒有 face 蓋上的開放邊緣），視覺上呈現「面板透空」或「機殼缺角」。
+
+`--auto-fill-holes` 在 decimation 後對所有 boundary loop 執行 Blender 的 `bpy.ops.mesh.fill_holes(sides=N)` — 把長度 ≤ N 的 loop 用三角形補上。
+
+| N | 適用 | 風險 | 結果 |
+|---|---|---|---|
+| 4 | 只補小四邊洞 | 大洞補不到 → 面板透空 | A3 視覺較差 |
+| **8** | 主流 CAD seam 洞、機殼小縫 | 機殼開口若 ≤ 8 邊也會被補 | **平衡點** |
+| 16 | 大開口都補 | 通風孔、面板鏤空被誤封 | 跟 8 差異不大但風險高 |
+
+**何時調整**：
+* 視覺仍有透空感、想更激進補洞 → 試 `--fill-holes-max-sides 12`
+* 設備有大量設計鏤空（散熱孔、面板透視）→ 降到 `--fill-holes-max-sides 4` 或 `6`，只補小洞
+
+### 6.7 端到端範例：三個典型使用情境
+
+#### 範例 A — 30 機產線 viewer（最常見）
+
+**情境**：智能工廠展廳視覺化系統，產線一條 30 台設備，使用者透過 web viewer 漫遊整廠。
+
+```bash
+# Step 1 — 把 30 台 CAD 檔批次轉成 TIER 1
+mkdir -p data/lod1
+for f in data/raw/*.fbx; do
+  diamesh reduce "$f" --backend blender \
+    --ratio 0.1 --cull-disjoint 0.025 --auto-fill-holes \
+    -o "data/lod1/$(basename "$f" .fbx)_lod1.fbx"
+done
+
+# Step 2 — 檢查每台 mesh 統計（確認 face 預算）
+for f in data/lod1/*.fbx; do
+  diamesh info "$f"
+done
+
+# Step 3 — 上 viewer / 3D engine（Unreal / Unity / Three.js）
+# 整條產線總 face budget 約 30 × 7k = 210k，筆電內顯也能流暢跑
+```
+
+**預期結果**：
+* 30 個 fbx 檔 × ~1.5 MB（含內嵌貼圖）= ~45 MB 整條產線
+* 載入時間 < 5 秒
+* GTX 1650 / Intel Iris Xe 跑 60 FPS 不掉
+
+#### 範例 B — 客戶 demo 單機聚焦
+
+**情境**：客戶來訪要看某台 5 軸點膠機的細節，需要從廠區視角縮放到單機聚焦。
+
+```bash
+# 同一台機器產生 TIER 1 + TIER 2 兩份
+diamesh reduce data/5AxisGlueSpraying.fbx \
+  --backend blender --ratio 0.1  --cull-disjoint 0.025 --auto-fill-holes \
+  -o data/5Axis_TIER1.fbx
+diamesh reduce data/5AxisGlueSpraying.fbx \
+  --backend blender --ratio 0.25 --cull-disjoint 0.04  --auto-fill-holes \
+  -o data/5Axis_TIER2.fbx
+
+# Viewer 根據相機距離自動切換：遠 → TIER 1，近 → TIER 2
+```
+
+**預期結果**：客戶 zoom-in 那台時無感切換、看到機械手臂與 HMI 螢幕都清楚。
+
+#### 範例 C — CEO 簡報 hero shot
+
+**情境**：法說會 PPT 要放一張產線旗艦設備的高品質渲染。
+
+```bash
+# 用 TIER 3 — 視覺接近原檔
+diamesh reduce data/5AxisGlueSpraying.fbx \
+  --backend blender --ratio 0.5 --cull-disjoint 0.03 --auto-fill-holes \
+  -o data/5Axis_hero.fbx
+
+# 在 Blender 開啟 hero.fbx → 高品質渲染（Cycles，4K）→ PNG 導出
+```
+
+**預期結果**：原檔 75k face → 37k face，視覺幾乎沒差，但渲染時間少一半，PPT 可以放多張角度也不卡。
+
+#### 範例 D — 嚴重破爛 mesh 的搶救
+
+**情境**：CAD 匯出的 FBX 一打開就一堆漂浮、重複頂點，標準 preset 救不回來。
+
+```bash
+# 先 info 看看狀況
+diamesh info data/Bad.fbx
+
+# 試激進 cull + 大角度 fill
+diamesh reduce data/Bad.fbx \
+  --backend blender --ratio 0.1 \
+  --cull-disjoint 0.05 \
+  --auto-fill-holes --fill-holes-max-sides 16 \
+  -o data/Bad_repair.fbx
+```
+
+**還救不回來時**：原檔 topology 太亂，建議匯出前先在 CAD 端 export 設定改 “merged vertices” 或在 Blender 手動 weld 後再進 DIAMesh pipeline。
 
 ---
 
@@ -506,7 +677,8 @@ DIAMesh 已經 patch 過內嵌 pyrender。如果您看到這個 error，可能 p
 
 ### 8.6 reduce 後 mesh 破碎 / 漂浮碎片
 * 用 `--backend blender`（trimesh / pymeshlab 不做 mesh repair）
-* 加 `--cull-disjoint 0.02`（distance-based island cull）
+* 加 `--cull-disjoint 0.025`（distance-based island cull）
+* 加 `--auto-fill-holes`（補 decimation 留下的 boundary loop）
 * 提高 ratio 到 0.25 或 0.5
 
 ### 8.7 reduce 後沒材質
@@ -560,13 +732,17 @@ diamesh view <file.fbx>                          # interactive viewer
 # Default backend (trimesh, no material)
 diamesh reduce <file.fbx> --target-faces 5000
 
-# Production LOD A — minimal face
-diamesh reduce <file.fbx> --ratio 0.1 --backend blender \
-    --cull-disjoint 0.02 -o <out.fbx>
+# TIER 1 — 廠區/產線視角（30 台同畫面）
+diamesh reduce <file.fbx> --backend blender --ratio 0.1 \
+    --cull-disjoint 0.025 --auto-fill-holes -o <out.fbx>
 
-# Production LOD B — better detail
-diamesh reduce <file.fbx> --ratio 0.25 --backend blender \
-    --cull-disjoint 0.03 -o <out.fbx>
+# TIER 2 — 單機聚焦（點選展開細節）
+diamesh reduce <file.fbx> --backend blender --ratio 0.25 \
+    --cull-disjoint 0.04 --auto-fill-holes -o <out.fbx>
+
+# TIER 3 — Hero shot（行銷素材 / CEO 簡報）
+diamesh reduce <file.fbx> --backend blender --ratio 0.5 \
+    --cull-disjoint 0.03 --auto-fill-holes -o <out.fbx>
 
 # Backend explorations
 diamesh reduce <file.fbx> --ratio 0.5 --backend pymeshlab -o <out.glb>

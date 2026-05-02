@@ -104,30 +104,43 @@ def render_mermaid_blocks(md_text: str) -> tuple[str, list[Path]]:
             raise RuntimeError("build_user_guide_pdf failed to produce USER_GUIDE.html")
 
     from playwright.sync_api import sync_playwright
+    from playwright._impl._errors import TimeoutError as PWTimeout
 
     paths: list[Path] = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            executable_path=chrome,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
-        context = browser.new_context(
-            viewport={"width": 1600, "height": 2400}, device_scale_factor=2
-        )
-        page = context.new_page()
-        page.on("console", lambda msg: print(f"[console] {msg.type}: {msg.text[:200]}"))
-        page.goto(pdf_html.as_uri(), wait_until="networkidle")
-        page.wait_for_function("() => window.__mermaidDone === true", timeout=180000)
-        n_present = page.locator(".mermaid").count()
-        print(f"[render] mermaid count in HTML: {n_present}, expected: {len(blocks)}")
-        for i in range(len(blocks)):
-            svg = page.locator(".mermaid").nth(i).locator("svg")
-            png_path = FIG_DIR / f"fig{i:02d}.png"
-            svg.screenshot(path=str(png_path), omit_background=False)
-            paths.append(png_path)
-            print(f"[fig {i:02d}] {png_path.name}")
-        context.close()
-        browser.close()
+    mermaid_ok = False
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                executable_path=chrome,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            context = browser.new_context(
+                viewport={"width": 1600, "height": 2400}, device_scale_factor=2
+            )
+            page = context.new_page()
+            page.on("console", lambda msg: print(f"[console] {msg.type}: {msg.text[:200]}"))
+            page.goto(pdf_html.as_uri(), wait_until="networkidle")
+            page.wait_for_function("() => window.__mermaidDone === true", timeout=180000)
+            n_present = page.locator(".mermaid").count()
+            print(f"[render] mermaid count in HTML: {n_present}, expected: {len(blocks)}")
+            for i in range(len(blocks)):
+                svg = page.locator(".mermaid").nth(i).locator("svg")
+                png_path = FIG_DIR / f"fig{i:02d}.png"
+                svg.screenshot(path=str(png_path), omit_background=False)
+                paths.append(png_path)
+                print(f"[fig {i:02d}] {png_path.name}")
+            context.close()
+            browser.close()
+            mermaid_ok = True
+    except PWTimeout as e:
+        print(f"[render][warn] mermaid CDN timeout — falling back to text placeholders: {e}")
+    except Exception as e:
+        print(f"[render][warn] mermaid render failed ({type(e).__name__}): {e}")
+
+    if not mermaid_ok:
+        # Fallback: keep mermaid blocks as plain fenced code so docx still
+        # compiles — the diagram source code is preserved verbatim.
+        return md_text, []
 
     def repl(m: re.Match[str]) -> str:
         idx = repl.counter
