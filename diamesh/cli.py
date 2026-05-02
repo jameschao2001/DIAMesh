@@ -60,6 +60,8 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
         min_island_faces=args.min_island_faces,
         cull_disjoint=args.cull_disjoint,
         cull_anchor_count=args.cull_anchor_count,
+        auto_fill_holes=args.auto_fill_holes,
+        fill_holes_max_sides=args.fill_holes_max_sides,
     )
     print(f"reduced: {args.file}")
     for k, v in metrics.items():
@@ -134,6 +136,21 @@ def main(argv: list[str] | None = None) -> int:
         help="With --cull-disjoint: how many of the largest islands to "
              "treat as 'anchor structure' (the rest are checked for "
              "distance to any anchor). Default 10.",
+    )
+    p_reduce.add_argument(
+        "--auto-fill-holes",
+        action="store_true",
+        help="(blender backend) After collapse, run Blender's hole-fill "
+             "operator to patch boundary loops opened by decimation. "
+             "Avoids visible breakage on production LOD.",
+    )
+    p_reduce.add_argument(
+        "--fill-holes-max-sides",
+        type=int,
+        default=8,
+        help="Max boundary loop length (edges) for --auto-fill-holes. "
+             "Default 8 covers most CAD seam holes; lower is conservative, "
+             "higher caps even open surfaces.",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 

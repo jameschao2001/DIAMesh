@@ -79,6 +79,24 @@ def parse_args() -> argparse.Namespace:
              "count) to use as anchors. An island is kept if it is close "
              "to ANY anchor. Default 10.",
     )
+    p.add_argument(
+        "--auto-fill-holes",
+        action="store_true",
+        help="After Stage 2 collapse, run Blender's mesh.fill_holes "
+             "operator to patch boundary loops up to --fill-holes-max-sides "
+             "edges. Useful for production LOD where small holes opened "
+             "during decimation read as visual breakage.",
+    )
+    p.add_argument(
+        "--fill-holes-max-sides",
+        type=int,
+        default=8,
+        help="Maximum boundary loop length (in edges) that --auto-fill-holes "
+             "will attempt to patch. 4 is conservative (only quads); 8 is "
+             "the recommended default (covers most CAD seam holes); 32+ "
+             "fills aggressively at the risk of capping intentionally open "
+             "surfaces.",
+    )
     return p.parse_args(argv)
 
 
@@ -453,6 +471,28 @@ def main() -> int:
         except RuntimeError as e:
             print(f"WARN: collapse failed: {e}", file=sys.stderr)
             joined.modifiers.remove(col)
+
+    # Stage 2.5 — auto-fill holes opened during decimation
+    if args.auto_fill_holes:
+        edges_before = len(joined.data.edges)
+        faces_before = len(joined.data.polygons)
+        try:
+            bpy.context.view_layer.objects.active = joined
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.select_all(action="SELECT")
+            bpy.ops.mesh.fill_holes(sides=int(args.fill_holes_max_sides))
+            bpy.ops.object.mode_set(mode="OBJECT")
+        except RuntimeError as e:
+            print(f"WARN: fill_holes failed: {e}", file=sys.stderr)
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except RuntimeError:
+                pass
+        faces_added = len(joined.data.polygons) - faces_before
+        edges_added = len(joined.data.edges) - edges_before
+        print(f"DIAMESH_FILL_HOLES_FACES_ADDED={max(0, faces_added)}")
+        print(f"DIAMESH_FILL_HOLES_EDGES_ADDED={max(0, edges_added)}")
+        print(f"DIAMESH_FILL_HOLES_MAX_SIDES={int(args.fill_holes_max_sides)}")
 
     # Output stats
     out_faces = len(joined.data.polygons)

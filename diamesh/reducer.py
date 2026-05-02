@@ -137,6 +137,8 @@ def _reduce_blender(
     min_island_faces: int = 0,
     cull_disjoint: float = 0.0,
     cull_anchor_count: int = 10,
+    auto_fill_holes: bool = False,
+    fill_holes_max_sides: int = 8,
 ) -> dict[str, int | float]:
     """Decimate via Blender headless — preserves materials, textures, hierarchy.
 
@@ -173,6 +175,9 @@ def _reduce_blender(
     if cull_disjoint and cull_disjoint > 0:
         cmd += ["--cull-disjoint", str(float(cull_disjoint))]
         cmd += ["--cull-anchor-count", str(int(cull_anchor_count))]
+    if auto_fill_holes:
+        cmd += ["--auto-fill-holes"]
+        cmd += ["--fill-holes-max-sides", str(int(fill_holes_max_sides))]
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -233,6 +238,8 @@ def reduce_mesh(
     min_island_faces: int = 0,
     cull_disjoint: float = 0.0,
     cull_anchor_count: int = 10,
+    auto_fill_holes: bool = False,
+    fill_holes_max_sides: int = 8,
 ) -> dict[str, int | float]:
     """Reduce a mesh file's triangle count.
 
@@ -295,6 +302,8 @@ def reduce_mesh(
             min_island_faces=min_island_faces,
             cull_disjoint=cull_disjoint,
             cull_anchor_count=cull_anchor_count,
+            auto_fill_holes=auto_fill_holes,
+            fill_holes_max_sides=fill_holes_max_sides,
         )
 
     meshes = load_fbx(input_path)
