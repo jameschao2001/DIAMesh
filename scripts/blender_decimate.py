@@ -191,6 +191,27 @@ def parse_args() -> argparse.Namespace:
              "Higher fuses more cracks but risks merging fine details "
              "that survived Stage 2 collapse.",
     )
+    p.add_argument(
+        "--bridge-loops",
+        action="store_true",
+        help="After post-weld and BEFORE auto-fill-holes, find pairs of "
+             "boundary loops within --bridge-loops-max-distance-frac of "
+             "each other and bridge them with a face strip "
+             "(bmesh.ops.bridge_loops). Different concept from fill_holes: "
+             "bridges link two opposing open loops (panel seams), while "
+             "fill_holes triangulates a single open loop with a planar "
+             "fan. Successfully bridged pairs disappear from the boundary "
+             "set; remaining loops still go through fill_holes.",
+    )
+    p.add_argument(
+        "--bridge-loops-max-distance-frac",
+        type=float,
+        default=0.005,
+        help="Max centroid distance between two loops to consider them a "
+             "bridge candidate, as a fraction of mesh bbox diagonal. "
+             "Default 0.005 (0.5%% of diagonal). Loops are also filtered "
+             "by edge-count similarity (within 2x).",
+    )
     return p.parse_args(argv)
 
 
@@ -754,6 +775,104 @@ def main() -> int:
         bm.free()
         print(f"DIAMESH_POST_COLLAPSE_WELD_DIST={post_weld_dist:.6e}")
         print(f"DIAMESH_POST_COLLAPSE_WELD_VERTS={n_post_welded}")
+
+    # Stage 2.45 — bridge nearby boundary loops (different concept from
+    # fill_holes: instead of triangulating a single open loop with a
+    # planar fan, find pairs of opposing open loops and link them with
+    # a face strip. Suits panel seams where the two halves of a split
+    # surface should merge. Runs BEFORE fill_holes so successfully
+    # bridged pairs disappear from the boundary set and fill_holes only
+    # patches what bridge couldn't pair up.
+    if args.bridge_loops:
+        bm = bmesh.new()
+        bm.from_mesh(joined.data)
+        bm.edges.ensure_lookup_table()
+        bm.verts.ensure_lookup_table()
+
+        loops = _group_boundary_edges_into_loops(bm)
+        n_pairs_found = 0
+        n_pairs_bridged = 0
+
+        if loops:
+            xs = [v.co.x for v in joined.data.vertices]
+            ys = [v.co.y for v in joined.data.vertices]
+            zs = [v.co.z for v in joined.data.vertices]
+            if xs:
+                dx = max(xs) - min(xs)
+                dy = max(ys) - min(ys)
+                dz = max(zs) - min(zs)
+                br_diag = math.sqrt(dx * dx + dy * dy + dz * dz)
+            else:
+                br_diag = 0.0
+            max_dist = br_diag * float(args.bridge_loops_max_distance_frac)
+
+            # Compute centroid + size for each loop
+            loop_info = []
+            for li, loop_edges in enumerate(loops):
+                seen = set()
+                pts = []
+                for e in loop_edges:
+                    for v in e.verts:
+                        if v.index not in seen:
+                            seen.add(v.index)
+                            pts.append((v.co.x, v.co.y, v.co.z))
+                if not pts:
+                    continue
+                cx = sum(p[0] for p in pts) / len(pts)
+                cy = sum(p[1] for p in pts) / len(pts)
+                cz = sum(p[2] for p in pts) / len(pts)
+                loop_info.append({
+                    "idx": li,
+                    "edges": loop_edges,
+                    "centroid": (cx, cy, cz),
+                    "size": len(loop_edges),
+                })
+
+            # Greedy pairing: each loop pairs with its nearest unpaired
+            # peer if within max_dist AND of similar size (within 2x).
+            paired = set()
+            pairs = []
+            for i, a in enumerate(loop_info):
+                if a["idx"] in paired:
+                    continue
+                best_j = -1
+                best_d = float("inf")
+                for j, b in enumerate(loop_info):
+                    if i == j or b["idx"] in paired:
+                        continue
+                    size_ratio = max(a["size"], b["size"]) / max(1, min(a["size"], b["size"]))
+                    if size_ratio > 2.0:
+                        continue
+                    dx = a["centroid"][0] - b["centroid"][0]
+                    dy = a["centroid"][1] - b["centroid"][1]
+                    dz = a["centroid"][2] - b["centroid"][2]
+                    d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                    if d < best_d and d <= max_dist:
+                        best_d = d
+                        best_j = j
+                if best_j >= 0:
+                    pairs.append((a, loop_info[best_j]))
+                    paired.add(a["idx"])
+                    paired.add(loop_info[best_j]["idx"])
+
+            n_pairs_found = len(pairs)
+
+            for a, b in pairs:
+                edges = list(a["edges"]) + list(b["edges"])
+                try:
+                    bmesh.ops.bridge_loops(bm, edges=edges)
+                    n_pairs_bridged += 1
+                except (RuntimeError, ValueError):
+                    # bridge_loops fails when topology is too complex;
+                    # skip silently — the unbridged loop falls through
+                    # to fill_holes for triangulation.
+                    pass
+
+            bm.to_mesh(joined.data)
+
+        bm.free()
+        print(f"DIAMESH_BRIDGE_LOOPS_PAIRS_FOUND={n_pairs_found}")
+        print(f"DIAMESH_BRIDGE_LOOPS_PAIRS_BRIDGED={n_pairs_bridged}")
 
     # Stage 2.5 — auto-fill holes opened during decimation
     if args.auto_fill_holes:
