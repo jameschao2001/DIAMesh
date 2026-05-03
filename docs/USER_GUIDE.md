@@ -759,6 +759,34 @@ diamesh reduce in.fbx --preset tier1 --target-faces 5000 -o out.fbx
 diamesh reduce in.fbx --preset tier1 --target-faces 5000 --aggressive-collapse -o out.fbx
 ```
 
+**⚠️ Aggressive 不是突破物理下限的工具 — ratio 太低時兩 mode 都會崩**
+
+實測在 5AxisGlueSpraying.fbx 上設 `--ratio 0.05`：
+
+| 設定 | achieved_ratio | 視覺 |
+|---|---|---|
+| ratio 0.05（無 aggressive）| ~0.07 | ❌ **崩** — 機械臂消失、面板大量缺失、大量黑色 fold-over face |
+| ratio 0.05 + aggressive | ~0.05 | ❌ **同樣崩** — 視覺差異微乎其微 |
+
+**Root cause**：5Axis face = 75327 × 0.05 = **3766 face**。設備有 24 個 material slot，平均 each ~157 face — **face 預算根本不夠表達 24 個材質區域 + boundary + 結構**。這個 limit 跟 boundary preservation 無關，是 mesh **物理表達下限**。
+
+**合理 ratio 對 5AxisGlueSpraying.fbx 的對應表**：
+
+| 設 ratio | 約 face | 視覺 | 場景 |
+|---|---|---|---|
+| 0.5 | ~37k | 接近原檔 | TIER 3 Hero shot |
+| 0.25 | ~17k–50k | 結構可辨識 | TIER 2 單機聚焦 |
+| **0.10** | **~7k–21k** | **主結構完整** | **TIER 1 推薦下限** |
+| 0.05 | ~3.7k | ❌ 崩 | 物理限制 |
+| 0.01 | ~750 | ❌ 完全不可用 | – |
+
+**Aggressive 真正適用場景**：
+* ✓ 「ratio 0.1 設了但 boundary 拖到實際 0.28，user 想壓回 0.15-0.2」這種**中間 trim**
+* ✗ 「想突破 mesh 表達能力下限」 — aggressive 救不了，破得跟 normal 差不多
+* ✗ 「ratio 太低時想拿來救」 — root cause 是 face budget 不夠表達結構，跟 boundary 無關
+
+**結論**：對 24 material slot 級別工業 CAD，ratio **建議 ≥ 0.1**。aggressive 是 trim 工具，不是物理 limit 突破工具。
+
 **Finding：TIER 1 偵測到 8 inverted + 7 non_manifold（0.04% / 0.02%）**。極端 ratio 的 COLLAPSE 偶發 fold-over，量微小，視覺看不到，但量化指標誠實揭露。
 
 **Finding：TIER 2 winding_consistent 變 False**。multi-material face 邊界處的 winding 順序不一致，不是法向方向錯（inverted=0），不影響視覺。
