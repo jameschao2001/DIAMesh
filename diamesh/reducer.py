@@ -217,11 +217,23 @@ def _reduce_blender(
         cmd += ["--bridge-loops"]
         cmd += ["--bridge-loops-max-distance-frac", str(float(bridge_loops_max_distance_frac))]
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # Force UTF-8 + error replacement for the Blender subprocess stream:
+    # Blender prints input file paths and a few status lines that may
+    # contain non-ASCII (CJK file names, ©, …). Without explicit
+    # encoding, Python falls back to the OS code page (cp950 / gbk on
+    # zh-TW/CN Windows), which crashes the reader thread when it hits
+    # bytes outside that page and leaves proc.stdout = None.
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     if proc.returncode != 0:
         raise RuntimeError(
             f"Blender decimate failed (exit={proc.returncode}).\n"
-            f"stderr:\n{proc.stderr}\nstdout:\n{proc.stdout[-2000:]}"
+            f"stderr:\n{proc.stderr}\nstdout:\n{proc.stdout[-2000:] if proc.stdout else '(empty)'}"
         )
 
     metrics: dict[str, int | float] = {}
