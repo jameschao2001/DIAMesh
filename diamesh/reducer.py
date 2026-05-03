@@ -148,6 +148,8 @@ def _reduce_blender(
     fill_holes_smooth: bool = False,
     fill_holes_smooth_iter: int = 2,
     fill_holes_smooth_factor: float = 0.5,
+    post_collapse_weld: bool = False,
+    post_collapse_weld_multiplier: float = 5.0,
 ) -> dict[str, int | float]:
     """Decimate via Blender headless — preserves materials, textures, hierarchy.
 
@@ -206,6 +208,9 @@ def _reduce_blender(
         cmd += ["--fill-holes-smooth"]
         cmd += ["--fill-holes-smooth-iter", str(int(fill_holes_smooth_iter))]
         cmd += ["--fill-holes-smooth-factor", str(float(fill_holes_smooth_factor))]
+    if post_collapse_weld:
+        cmd += ["--post-collapse-weld"]
+        cmd += ["--post-collapse-weld-multiplier", str(float(post_collapse_weld_multiplier))]
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -277,6 +282,8 @@ def reduce_mesh(
     fill_holes_smooth: bool = False,
     fill_holes_smooth_iter: int = 2,
     fill_holes_smooth_factor: float = 0.5,
+    post_collapse_weld: bool = False,
+    post_collapse_weld_multiplier: float = 5.0,
 ) -> dict[str, int | float]:
     """Reduce a mesh file's triangle count.
 
@@ -350,6 +357,8 @@ def reduce_mesh(
             fill_holes_smooth=fill_holes_smooth,
             fill_holes_smooth_iter=fill_holes_smooth_iter,
             fill_holes_smooth_factor=fill_holes_smooth_factor,
+            post_collapse_weld=post_collapse_weld,
+            post_collapse_weld_multiplier=post_collapse_weld_multiplier,
         )
 
     meshes = load_fbx(input_path)

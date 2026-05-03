@@ -171,6 +171,26 @@ def parse_args() -> argparse.Namespace:
         help="Per-iteration relaxation strength in (0, 1]. 0 = no move, "
              "1 = move fully to centroid of neighbours. Default 0.5.",
     )
+    p.add_argument(
+        "--post-collapse-weld",
+        action="store_true",
+        help="After Stage 2 COLLAPSE, run a second weld pass at "
+             "(pre-weld tolerance × multiplier) to fuse vertices that "
+             "COLLAPSE left close-but-disconnected — the root cause of "
+             "many post-decimation cracks. Cures more thoroughly than "
+             "boundary preservation alone but preserves input detail "
+             "(unlike just enlarging Stage 0 weld).",
+    )
+    p.add_argument(
+        "--post-collapse-weld-multiplier",
+        type=float,
+        default=5.0,
+        help="Multiplier on the Stage 0 weld tolerance for the post-"
+             "collapse pass. Default 5.0 — on a 2 m machine with "
+             "default --weld-tolerance-frac, post-weld ≈ 0.5 mm. "
+             "Higher fuses more cracks but risks merging fine details "
+             "that survived Stage 2 collapse.",
+    )
     return p.parse_args(argv)
 
 
@@ -709,6 +729,31 @@ def main() -> int:
         except RuntimeError as e:
             print(f"WARN: collapse failed: {e}", file=sys.stderr)
             joined.modifiers.remove(col)
+
+    # Stage 2.4 — post-collapse weld (cure cracks introduced by COLLAPSE).
+    # COLLAPSE leaves vertices that *should* coincide millimetres apart
+    # because the two surfaces collapsed independently. A second weld
+    # pass at a tolerance scaled up from the pre-collapse value catches
+    # these without touching input-level detail (which already passed
+    # the stricter Stage 0 weld). Order matters: must run BEFORE
+    # auto-fill-holes so boundary loops shrink first and fill_holes
+    # has less to patch.
+    if args.post_collapse_weld:
+        bm = bmesh.new()
+        bm.from_mesh(joined.data)
+        bm.verts.ensure_lookup_table()
+        post_weld_dist = weld_dist * float(args.post_collapse_weld_multiplier)
+        n_verts_pre = len(bm.verts)
+        try:
+            bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=post_weld_dist)
+        except (RuntimeError, ValueError) as e:
+            print(f"WARN: post-collapse weld failed: {e}", file=sys.stderr)
+        n_verts_post = len(bm.verts)
+        n_post_welded = max(0, n_verts_pre - n_verts_post)
+        bm.to_mesh(joined.data)
+        bm.free()
+        print(f"DIAMESH_POST_COLLAPSE_WELD_DIST={post_weld_dist:.6e}")
+        print(f"DIAMESH_POST_COLLAPSE_WELD_VERTS={n_post_welded}")
 
     # Stage 2.5 — auto-fill holes opened during decimation
     if args.auto_fill_holes:

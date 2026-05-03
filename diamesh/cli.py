@@ -157,6 +157,8 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
         fill_holes_smooth=args.fill_holes_smooth,
         fill_holes_smooth_iter=args.fill_holes_smooth_iter,
         fill_holes_smooth_factor=args.fill_holes_smooth_factor,
+        post_collapse_weld=args.post_collapse_weld,
+        post_collapse_weld_multiplier=args.post_collapse_weld_multiplier,
     )
     print(f"reduced: {args.file}")
     for k, v in metrics.items():
@@ -346,6 +348,24 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=0.5,
         help="Per-iteration relaxation strength in (0, 1]. Default 0.5.",
+    )
+    p_reduce.add_argument(
+        "--post-collapse-weld",
+        action="store_true",
+        help="(blender backend) After Stage 2 COLLAPSE, run a second "
+             "weld pass at (pre-weld × multiplier) to fuse vertices that "
+             "COLLAPSE left close-but-disconnected — a major root cause "
+             "of post-decimation cracks. Cures more thoroughly than "
+             "boundary preservation alone but preserves input detail.",
+    )
+    p_reduce.add_argument(
+        "--post-collapse-weld-multiplier",
+        type=float,
+        default=5.0,
+        help="With --post-collapse-weld: multiplier on Stage 0 weld "
+             "tolerance for the post-collapse pass. Default 5.0 (≈0.5 mm "
+             "on 2 m machine). Higher fuses more cracks but risks "
+             "merging fine details that survived collapse.",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 
