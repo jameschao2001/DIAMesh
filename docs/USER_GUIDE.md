@@ -725,7 +725,39 @@ DIAMesh 的 pipeline 設計剛好對應這些病理：
 
 **Finding：face_count 達不到目標 ratio。** 這是 **boundary preservation + delimit 4 集合 (MAT/SHARP/SEAM/UV)** 的副作用 — 太多 edge 被保護 → COLLAPSE 砍不下去。
 
-**這是設計取捨，不是 bug**：保 boundary（視覺完整 / 邊緣連續）跟達到 face budget 兩條目標衝突。如果 face budget 是硬限制，可以放寬 delimit（例如改 `delimit={MATERIAL}` 只保護材質邊界），但會犧牲視覺完整性。對「完整 > 細節」的 LOD 場景，當前取捨是對的。
+**這是設計取捨，不是 bug**：保 boundary（視覺完整 / 邊緣連續）跟達到 face budget 兩條目標衝突。對「完整 > 細節」的 LOD 場景，預設取捨是對的（保 boundary）。
+
+**Mental model 修正**：`--ratio` 是 *target hint*，不是 *contract*。實際 ratio 通常會比 target 高，因為被保護的 edge 拉住了 collapse。這是 feature 不是 bug，但需要 user 預期管理。
+
+**何時 `--ratio` 真的成為硬約束？**
+* face budget 嚴格（GPU memory 預算、傳輸大小限制）
+* 寧願接受視覺破面也要把 face 砍夠
+
+**那就用 `--aggressive-collapse` opt-in flag**：
+```bash
+diamesh reduce in.fbx --preset tier1 --ratio 0.05 --aggressive-collapse -o out.fbx
+```
+
+這個 flag 觸發兩個放寬：
+1. **跳過 boundary preservation**（Stage 0.D 不再 mark boundary edge sharp）
+2. **COLLAPSE delimit 從 `{MAT,SHARP,SEAM,UV}` 改為 `{MATERIAL}` only**（只保材質邊界）
+
+換來：
+* ✅ ratio 真正接近 target
+* ⚠️ boundary 容易被破壞 → 視覺破面增加
+* ⚠️ UV 邊界跨界 collapse → 材質可能扭曲
+* ⚠️ 需要靠 `--auto-fill-holes` + `--bridge-loops` 補回視覺完整性，但效果不如預設行為
+
+**`--aggressive-collapse` 的 sentinel** `DIAMESH_AGGRESSIVE_COLLAPSE=1` 會印出來，方便後續 diff/diagnose 比對行為差異。
+
+**替代方案**：直接用 `--target-faces N` 控制絕對 face 數，比 ratio 更直觀：
+```bash
+diamesh reduce in.fbx --preset tier1 --target-faces 5000 -o out.fbx
+```
+但仍受 boundary preservation 限制 — 真正硬約束時兩個 flag 一起用：
+```bash
+diamesh reduce in.fbx --preset tier1 --target-faces 5000 --aggressive-collapse -o out.fbx
+```
 
 **Finding：TIER 1 偵測到 8 inverted + 7 non_manifold（0.04% / 0.02%）**。極端 ratio 的 COLLAPSE 偶發 fold-over，量微小，視覺看不到，但量化指標誠實揭露。
 
@@ -968,6 +1000,9 @@ diamesh reduce <file.fbx> --preset tier1 \
 
 # Override preset's scalar (e.g. more aggressive face budget)
 diamesh reduce <file.fbx> --preset tier1 --ratio 0.05 -o <out.fbx>
+
+# Force --ratio to be a contract (sacrifice boundary integrity for face budget)
+diamesh reduce <file.fbx> --preset tier1 --ratio 0.05 --aggressive-collapse -o <out.fbx>
 
 # Backend explorations (no material, fastest)
 diamesh reduce <file.fbx> --ratio 0.5 --backend pymeshlab -o <out.glb>

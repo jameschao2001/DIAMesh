@@ -212,6 +212,18 @@ def parse_args() -> argparse.Namespace:
              "Default 0.005 (0.5%% of diagonal). Loops are also filtered "
              "by edge-count similarity (within 2x).",
     )
+    p.add_argument(
+        "--aggressive-collapse",
+        action="store_true",
+        help="Trade visual integrity for face-budget compliance. "
+             "Disables boundary preservation (Stage 0.D no longer marks "
+             "boundary edges sharp) AND relaxes COLLAPSE delimit from "
+             "{MATERIAL,SHARP,SEAM,UV} to {MATERIAL} only. Result: the "
+             "requested --ratio is reached much more closely, at the "
+             "cost of more cracked boundaries and possibly distorted UVs. "
+             "Use when --target-faces is hard contract and visual "
+             "completeness can be re-patched downstream.",
+    )
     return p.parse_args(argv)
 
 
@@ -534,6 +546,7 @@ def _repair(
     sharp_angle_rad: float,
     degen_dist: float,
     fix_non_manifold: bool = False,
+    skip_boundary_preservation: bool = False,
 ):
     """Run the full Stage-0 mesh repair sweep on a single object.
 
@@ -575,13 +588,16 @@ def _repair(
     # protection, COLLAPSE happily kills them, opening new holes that
     # we then have to patch with --auto-fill-holes. Marking them sharp
     # lets `delimit={SHARP}` in the COLLAPSE modifier preserve them.
+    # When aggressive-collapse is requested, skip boundary marking so
+    # COLLAPSE can hit the requested ratio at the cost of cracks.
     sharp_marked = 0
     boundary_marked = 0
     for edge in bm.edges:
         n_faces = len(edge.link_faces)
         if n_faces == 1:
-            edge.smooth = False
-            boundary_marked += 1
+            if not skip_boundary_preservation:
+                edge.smooth = False
+                boundary_marked += 1
         elif n_faces == 2:
             try:
                 if edge.calc_face_angle() > sharp_angle_rad:
@@ -699,6 +715,7 @@ def main() -> int:
         sharp_angle_rad,
         DEGEN_DIST,
         fix_non_manifold=args.fix_non_manifold,
+        skip_boundary_preservation=args.aggressive_collapse,
     )
     print(f"DIAMESH_REPAIR_WELDED_VERTS={repair['welded_verts']}")
     print(f"DIAMESH_REPAIR_LOOSE_VERTS={repair['loose_verts']}")
@@ -708,6 +725,7 @@ def main() -> int:
     print(f"DIAMESH_REPAIR_BOUNDARY_MARKED={repair['boundary_marked']}")
     print(f"DIAMESH_REPAIR_NON_MANIFOLD_INITIAL={repair['non_manifold_initial']}")
     print(f"DIAMESH_REPAIR_NON_MANIFOLD_FIXED={repair['non_manifold_fixed']}")
+    print(f"DIAMESH_AGGRESSIVE_COLLAPSE={int(args.aggressive_collapse)}")
 
     # Stage 0.5 — distance-based island cull (LOD-friendly, preferred)
     cull_islands, cull_faces = _cull_disjoint_islands(
@@ -744,7 +762,10 @@ def main() -> int:
         col.decimate_type = "COLLAPSE"
         col.ratio = max(0.001, min(1.0, target / n_after_dissolve))
         col.use_collapse_triangulate = True
-        col.delimit = {"MATERIAL", "SHARP", "SEAM", "UV"}
+        if args.aggressive_collapse:
+            col.delimit = {"MATERIAL"}
+        else:
+            col.delimit = {"MATERIAL", "SHARP", "SEAM", "UV"}
         try:
             bpy.ops.object.modifier_apply(modifier=col.name)
         except RuntimeError as e:

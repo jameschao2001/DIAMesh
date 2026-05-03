@@ -226,6 +226,7 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
         post_collapse_weld_multiplier=args.post_collapse_weld_multiplier,
         bridge_loops=args.bridge_loops,
         bridge_loops_max_distance_frac=args.bridge_loops_max_distance_frac,
+        aggressive_collapse=args.aggressive_collapse,
     )
     print(f"reduced: {args.file}")
     for k, v in metrics.items():
@@ -461,6 +462,15 @@ def main(argv: list[str] | None = None) -> int:
         help="With --bridge-loops: max centroid distance between two "
              "loops to consider bridging (fraction of mesh diagonal). "
              "Default 0.005 (0.5%% of diagonal).",
+    )
+    p_reduce.add_argument(
+        "--aggressive-collapse",
+        action="store_true",
+        help="(blender backend) Trade visual integrity for face-budget "
+             "compliance. Disables boundary preservation AND relaxes "
+             "COLLAPSE delimit to {MATERIAL} only. Use when you need "
+             "the requested --ratio enforced and can re-patch visual "
+             "completeness downstream.",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 
