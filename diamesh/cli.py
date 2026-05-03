@@ -127,8 +127,73 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     return 0
 
 
+PRESETS: dict[str, dict] = {
+    "tier1": {
+        "backend": "blender",
+        "ratio": 0.1,
+        "cull_disjoint": 0.025,
+        "auto_fill_holes": True,
+        "fill_holes_skip_design": True,
+        "bridge_loops": True,
+    },
+    "tier2": {
+        "backend": "blender",
+        "ratio": 0.25,
+        "cull_disjoint": 0.04,
+        "auto_fill_holes": True,
+        "fill_holes_skip_design": True,
+        "bridge_loops": True,
+    },
+    "tier3": {
+        "backend": "blender",
+        "ratio": 0.5,
+        "cull_disjoint": 0.03,
+        "auto_fill_holes": True,
+        "fill_holes_skip_design": True,
+        "bridge_loops": True,
+    },
+}
+PRESETS["balanced"] = PRESETS["tier2"]
+
+
+def _apply_preset(args: argparse.Namespace) -> None:
+    """Fill in missing args from the chosen --preset, preserving any
+    flag the user explicitly set on the command line.
+
+    For scalar args (backend / ratio / cull_disjoint), the user's
+    explicit value wins because we treat ``None`` as "unset". For
+    boolean opt-in flags (auto_fill_holes, fill_holes_skip_design,
+    bridge_loops), the preset can only turn them ON — there is no
+    `--no-*` syntax. Operators who need them OFF should not use a
+    preset and instead list flags explicitly.
+    """
+    if not args.preset:
+        return
+    preset = PRESETS[args.preset]
+    if args.backend is None:
+        args.backend = preset["backend"]
+    if args.ratio is None and args.target_faces is None:
+        args.ratio = preset["ratio"]
+    if args.cull_disjoint is None:
+        args.cull_disjoint = preset["cull_disjoint"]
+    if not args.auto_fill_holes and preset.get("auto_fill_holes"):
+        args.auto_fill_holes = True
+    if not args.fill_holes_skip_design and preset.get("fill_holes_skip_design"):
+        args.fill_holes_skip_design = True
+    if not args.bridge_loops and preset.get("bridge_loops"):
+        args.bridge_loops = True
+
+
 def _cmd_reduce(args: argparse.Namespace) -> int:
     from diamesh.reducer import reduce_mesh
+
+    _apply_preset(args)
+
+    # Final fallback defaults if neither preset nor explicit value gave one.
+    if args.backend is None:
+        args.backend = "trimesh"
+    if args.cull_disjoint is None:
+        args.cull_disjoint = 0.0
 
     if not args.output:
         # default: <input>_reduced.glb next to the source
@@ -218,10 +283,22 @@ def main(argv: list[str] | None = None) -> int:
     p_reduce = sub.add_parser("reduce", help="auto quadric mesh reduction")
     p_reduce.add_argument("file", help="path to .fbx (or other trimesh-supported) file")
     p_reduce.add_argument(
+        "--preset",
+        choices=list(PRESETS.keys()),
+        default=None,
+        help="One-shot production preset. tier1 = 廠區/30 機 (ratio 0.1); "
+             "tier2 / balanced = 單機聚焦 (ratio 0.25); tier3 = hero shot "
+             "(ratio 0.5). Sets backend + ratio + cull-disjoint + smart "
+             "fill + bridge loops in one go. Individual flags override "
+             "the preset's scalars; opt-in flags can only be turned ON "
+             "by the preset (use no preset to disable).",
+    )
+    p_reduce.add_argument(
         "--target-faces", type=int, help="absolute target face count"
     )
     p_reduce.add_argument(
-        "--ratio", type=float, help="keep this fraction of original faces, in (0, 1]"
+        "--ratio", type=float, default=None,
+        help="keep this fraction of original faces, in (0, 1]",
     )
     p_reduce.add_argument(
         "--output", "-o",
@@ -230,12 +307,12 @@ def main(argv: list[str] | None = None) -> int:
     p_reduce.add_argument(
         "--backend",
         choices=["trimesh", "pymeshlab", "blender"],
-        default="trimesh",
-        help="reduction backend. trimesh (default) = fast-simplification. "
-             "pymeshlab = MeshLab with boundary/normal preservation. "
-             "blender = headless Blender (preserves materials, textures, "
-             "hierarchy — recommended for FBX-out workflows; requires "
-             "vendor/blender/blender.exe or BLENDER_EXE env var)",
+        default=None,
+        help="reduction backend. trimesh (default when no --preset) = "
+             "fast-simplification. pymeshlab = MeshLab with boundary/normal "
+             "preservation. blender = headless Blender (preserves materials, "
+             "textures, hierarchy — recommended for FBX-out workflows; "
+             "requires vendor/blender/blender.exe or BLENDER_EXE env var)",
     )
     p_reduce.add_argument(
         "--min-island-faces",
@@ -248,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     p_reduce.add_argument(
         "--cull-disjoint",
         type=float,
-        default=0.0,
+        default=None,
         help="(blender backend, recommended) Distance-based island cull. "
              "Drop islands whose bounding box is further from the largest "
              "anchor islands than this fraction of the overall mesh "
@@ -310,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=5.0e-5,
         help="(blender backend) Stage 0 weld tolerance as a fraction of "
-             "the mesh bbox diagonal. Default 5e-5 ≈ 0.1 mm on a 2 m "
+             "the mesh bbox diagonal. Default 5e-5 ~= 0.1 mm on a 2 m "
              "machine (matching legacy 0.1 mm). Auto-scales: 5 m cell = "
              "0.25 mm, 30 cm part = 0.015 mm.",
     )
@@ -365,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=5.0,
         help="With --post-collapse-weld: multiplier on Stage 0 weld "
-             "tolerance for the post-collapse pass. Default 5.0 (≈0.5 mm "
+             "tolerance for the post-collapse pass. Default 5.0 (~=0.5 mm "
              "on 2 m machine). Higher fuses more cracks but risks "
              "merging fine details that survived collapse.",
     )
