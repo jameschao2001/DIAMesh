@@ -156,7 +156,7 @@ pip install -e .
 
 ### 2.2 平台特定 vendor binary
 
-**Windows 用戶**：FBX2glTF.exe 跟 Assimp DLL 已經 git-tracked，clone 即用。
+**Windows 用戶**：向開發團隊索取 DIAMesh zip 後解壓即可，FBX2glTF.exe 跟 Assimp DLL 已內含於 vendor/。
 
 **Linux / macOS 用戶**：跑一次 setup script 自動下載對應 binary：
 
@@ -990,14 +990,14 @@ diamesh reduce input.fbx --backend blender --ratio 0.1 ^
 ```bash
 cd <unpacked-DIAMesh-directory>
 pip install -e .
-python scripts/setup_vendor.py    # 自動下載 platform-specific binary（仍需可連 GitHub Release）
+python scripts/setup_vendor.py    # 自動下載 platform-specific binary（內網無外網訪問權限的用戶，請改用開發團隊提供的完整 vendor zip）
 # 手動下載 Blender Portable 解壓到 vendor/blender/（看 vendor/BLENDER_SETUP.md）
 diamesh reduce my.fbx --ratio 0.1 --cull-disjoint 0.02 --backend blender -o my_lod.fbx
 ```
 
 ### 7.3 為什麼不全部 vendor 進 repo
 
-* **Windows .exe / .dll**：~16 MB 總，commit 進 repo（最常見場景，clone 即用）
+* **Windows .exe / .dll**：~16 MB 總，跟原始碼一起打包進 vendor/（最常見場景，內網用戶解壓 zip 即用）
 * **Linux ELF / macOS dylib**：等量大小但每加一個 platform 都要 commit ~10MB+ → 不 sustainable
 * **Blender Portable**：~450 MB 解壓後，**且是 GPL** → bundle 進 MIT repo 有 license 感染風險，subprocess 呼叫安全
 

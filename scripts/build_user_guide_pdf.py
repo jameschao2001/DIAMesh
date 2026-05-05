@@ -16,7 +16,7 @@ Usage
 .. code-block:: bash
 
     python scripts/build_user_guide_pdf.py
-    # produces build/USER_GUIDE.html and build/USER_GUIDE.pdf
+    # produces build/USER_GUIDE.html (intermediate) and docs/USER_GUIDE.pdf
 
 Author: James Chao, Homi (AI Agent)
 Version: 0.1.0
@@ -177,7 +177,9 @@ def main() -> int:
     build = repo / "build"
     build.mkdir(exist_ok=True)
     html_path = build / "USER_GUIDE.html"
-    pdf_path = build / "USER_GUIDE.pdf"
+    # PDF goes to docs/ so it sits alongside the .md and .docx as a tracked
+    # deliverable; HTML stays in build/ as an intermediate (gitignored).
+    pdf_path = repo / "docs" / "USER_GUIDE.pdf"
 
     md_text = src.read_text(encoding="utf-8")
     md_text = _replace_mermaid_blocks(md_text)
