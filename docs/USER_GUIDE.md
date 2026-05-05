@@ -411,7 +411,7 @@ LOD 場景下，**主體完整性** 永遠比 **細節豐富度** 重要：
 diamesh reduce data/Machine.fbx --preset tier1 -o data/Machine_TIER1.fbx
 ```
 
-**展開為**：`--backend blender --ratio 0.1 --cull-disjoint 0.025 --auto-fill-holes --fill-holes-skip-design --bridge-loops`
+**展開為**：`--backend blender --ratio 0.1 --cull-disjoint 0.025 --auto-fill-holes --fill-holes-skip-design --bridge-loops --post-collapse-cull`
 
 **特性**：
 * face 砍到 ~10%（input 75k → output ~7k）
@@ -435,7 +435,7 @@ diamesh reduce data/Machine.fbx --preset tier2 -o data/Machine_TIER2.fbx
 diamesh reduce data/Machine.fbx --preset balanced -o data/Machine_TIER2.fbx
 ```
 
-**展開為**：`--backend blender --ratio 0.25 --cull-disjoint 0.04 --auto-fill-holes --fill-holes-skip-design --bridge-loops`
+**展開為**：`--backend blender --ratio 0.25 --cull-disjoint 0.04 --auto-fill-holes --fill-holes-skip-design --bridge-loops --post-collapse-cull`
 
 **特性**：
 * face 砍到 ~25%（input 75k → output ~17k）
@@ -456,7 +456,7 @@ diamesh reduce data/Machine.fbx --preset balanced -o data/Machine_TIER2.fbx
 diamesh reduce data/Machine.fbx --preset tier3 -o data/Machine_TIER3.fbx
 ```
 
-**展開為**：`--backend blender --ratio 0.5 --cull-disjoint 0.03 --auto-fill-holes --fill-holes-skip-design --bridge-loops`
+**展開為**：`--backend blender --ratio 0.5 --cull-disjoint 0.03 --auto-fill-holes --fill-holes-skip-design --bridge-loops --post-collapse-cull`
 
 **特性**：
 * face 砍到 ~50%（input 75k → output ~37k）
@@ -871,7 +871,83 @@ bridge 加 face strip 連兩 loop → 新 face 的 normal 跟原檔不對齊 →
 
 **保留 `--post-collapse-weld` flag 為 opt-in**，僅在「極端破爛 mesh + multiplier 1.0~1.5」這種 niche 情境值得試。
 
-#### 6.8.8 跟遊戲業 LOD 的差別
+#### 6.8.8 Stage 2.7 — Post-collapse Island Cull（成功 case，已進 preset）
+
+§5.4 的 Stage 0.5 cull 只清「降面前」就漂浮的 island；但 Stage 2 COLLAPSE 會**新製造**孤兒——material delimit、sharp delimit 切開部件邊界後，兩側獨立 collapse 留下 1-9 face 的小碎片。這些「降面後新生孤兒」之前 pipeline 不處理，直接寫進輸出 FBX，產線同事在 viewer 上看到一團「黃色面板前的尖刺漂浮物」。
+
+`--post-collapse-cull` 在所有 repair pass 之後（Stage 2.6 smooth 之後、export 之前）跑一次 BFS 找 connected components，刪除 face_count < `--post-collapse-cull-min-faces` 的小 island。
+
+**5AxisGlueSpraying.fbx 三組對比**
+
+| 指標 | E1 不開 cull | E2 cull min=10 | E3 cull min=20 |
+|---|---|---|---|
+| face_count | 26029 | 20708 | 17889 |
+| **island_count** | 8951 | **5922 (-33.8%)** | 4819 (-46.2%) |
+| **largest_islands** (top 5) | [283,265,258,236,175] | **完全相同** | **完全相同** |
+| boundary_edges | 40775 | 29836 | 25221 |
+| inverted_normals | 24 | **0** | 0 |
+| self_intersect % | 84.6% | 82.9% | 82.5% |
+| removed_islands | 0 | 1623 | 1829 |
+
+**三個關鍵發現**
+
+1. **主體三組全等保留** — top 5 island [283, 265, 258, 236, 175] 從 E1→E2→E3 完全相同，證明 cull 不傷主體。
+2. **意外彩蛋：inverted_normals 從 24 → 0** — 翻轉法向的 face 剛好都在被 cull 的小碎片裡，順手清掉。
+3. **min=10→20 多刪的是有效部件** — 平均每多刪 1 個 island = 12.6 face，這個級別對應 HMI 邊框、感測器頭、小螺絲。視覺驗證 E3 的 HMI 邊框消失、控制盒外殼破洞、機械臂頭粗糙——**min=10 是甜蜜點**。
+
+**geometric diff 驗證（E1 vs E2）**
+
+```
+hausdorff_max:       0.071234 (3.12% diag)
+  o->r:              0.071234       (E1 上孤兒最遠距離)
+  r->o:              0.000000  ⭐  (E2 是 E1 的嚴格子集)
+chamfer:             0.000915 (0.04% diag)
+mean_normal_dev_deg: 9.1225°
+```
+
+* **r→o = 0.000000** — cull 是純減法，不改 vertex 位置，這是**結構上的數學保證**
+* **chamfer 0.04%** — 被刪部分都靠近主體（孤兒本來就是 collapse 切離主體的副產物）
+* **mean_normal_dev = 9.12°** — 比 §6.8.3 tier1 baseline 12.06° **還低**，因為 inverted_normals 順便清掉
+
+**方法論：post-weld 失敗（§6.8.7）vs post-cull 成功（本節）的對照**
+
+兩個案例構成完整教育範例：
+
+| 維度 | post-weld (Stage 2.4，§6.8.7 失敗) | post-cull (Stage 2.7，本節成功) |
+|---|---|---|
+| 機制 | 合 close vertex（**動相連結構**） | 刪 small island（**只動斷開部分**） |
+| 對主體影響 | 可能合掉細節（multiplier 5.0 過頭時） | 數學上不可能傷主體（純減法） |
+| chamfer | +32% 退化 | E1→E2 0.04% 微小 |
+| mean_normal_dev | +0.74° 退化 | **更統一**（-2.94° vs §6.8.3 tier1） |
+| hausdorff r→o | +170% 退化 | **0.000000** |
+| 結局 | 留 flag、default off | **進 tier1/2/3 preset default**（min=10）|
+
+**啟示**：在 production pipeline 末端做改進時，**只刪不加**的操作風險遠低於**動結構**的操作。post-weld 想用乘法解問題（合更多 vertex），post-cull 用減法解問題（刪更少有意義的）；後者**結構上**保證好結果，前者要靠 tuning。下次評估新 stage 時優先想：「這是純減法還是動結構？」
+
+**CLI 用法**
+
+```bat
+:: 進 tier1/2/3 preset default（min-faces=10）
+diamesh reduce input.fbx --preset tier1 -o output.fbx
+
+:: 顯式覆寫 threshold（極保守，只清 1-4 face 微碎片）
+diamesh reduce input.fbx --preset tier1 --post-collapse-cull-min-faces 5 -o output.fbx
+
+:: 不用 preset，全手動展開（可選擇不開 cull）
+diamesh reduce input.fbx --backend blender --ratio 0.1 ^
+  --cull-disjoint 0.025 --auto-fill-holes --fill-holes-skip-design ^
+  --bridge-loops -o output.fbx
+:: 注意：preset 的 boolean 只能 ON 不能 OFF；要關必須不用 preset
+```
+
+**何時調 min-faces**
+
+* `5` — 極保守，只清 1-4 face 微碎片。失去太多小部件時退到這
+* **`10`** — 推薦預設，10 face 以下幾乎是 collapse 副產物
+* `15-20` — 激進，會吃 HMI 邊框、感測器頭等；**只有當視覺乾淨優先於零件辨識時才用**
+* `20+` — 已超過甜蜜點，請改用 viewer 端 hide 而非 mesh 端 cull
+
+#### 6.8.9 跟遊戲業 LOD 的差別
 
 **遊戲業 LOD 主流做法**：
 

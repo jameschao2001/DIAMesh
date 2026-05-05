@@ -135,6 +135,8 @@ PRESETS: dict[str, dict] = {
         "auto_fill_holes": True,
         "fill_holes_skip_design": True,
         "bridge_loops": True,
+        "post_collapse_cull": True,
+        "post_collapse_cull_min_faces": 10,
     },
     "tier2": {
         "backend": "blender",
@@ -143,6 +145,8 @@ PRESETS: dict[str, dict] = {
         "auto_fill_holes": True,
         "fill_holes_skip_design": True,
         "bridge_loops": True,
+        "post_collapse_cull": True,
+        "post_collapse_cull_min_faces": 10,
     },
     "tier3": {
         "backend": "blender",
@@ -151,6 +155,8 @@ PRESETS: dict[str, dict] = {
         "auto_fill_holes": True,
         "fill_holes_skip_design": True,
         "bridge_loops": True,
+        "post_collapse_cull": True,
+        "post_collapse_cull_min_faces": 10,
     },
 }
 PRESETS["balanced"] = PRESETS["tier2"]
@@ -182,6 +188,13 @@ def _apply_preset(args: argparse.Namespace) -> None:
         args.fill_holes_skip_design = True
     if not args.bridge_loops and preset.get("bridge_loops"):
         args.bridge_loops = True
+    if not args.post_collapse_cull and preset.get("post_collapse_cull"):
+        args.post_collapse_cull = True
+    if (
+        args.post_collapse_cull_min_faces is None
+        and "post_collapse_cull_min_faces" in preset
+    ):
+        args.post_collapse_cull_min_faces = preset["post_collapse_cull_min_faces"]
 
 
 def _cmd_reduce(args: argparse.Namespace) -> int:
@@ -194,6 +207,8 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
         args.backend = "trimesh"
     if args.cull_disjoint is None:
         args.cull_disjoint = 0.0
+    if args.post_collapse_cull_min_faces is None:
+        args.post_collapse_cull_min_faces = 10
 
     if not args.output:
         # default: <input>_reduced.glb next to the source
@@ -487,11 +502,15 @@ def main(argv: list[str] | None = None) -> int:
     p_reduce.add_argument(
         "--post-collapse-cull-min-faces",
         type=int,
-        default=10,
+        default=None,
         help="With --post-collapse-cull: minimum face count for an "
-             "island to survive. Default 10 — clears 1-9 face shrapnel "
-             "while preserving small legitimate parts. Increase for "
-             "stricter cleaning, decrease if losing small parts.",
+             "island to survive. Default 10 (set by preset or fallback) "
+             "— clears 1-9 face shrapnel while preserving small "
+             "legitimate parts. Increase for stricter cleaning, "
+             "decrease if losing small parts. min=20 has been observed "
+             "to remove HMI bezels and sensor heads on production CAD "
+             "exports — recommend min=10 unless you've validated 20+ "
+             "doesn't eat real geometry.",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 
