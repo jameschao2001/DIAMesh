@@ -224,6 +224,30 @@ def parse_args() -> argparse.Namespace:
              "Use when --target-faces is hard contract and visual "
              "completeness can be re-patched downstream.",
     )
+    p.add_argument(
+        "--post-collapse-cull",
+        action="store_true",
+        help="After all repair passes (post-weld, bridge_loops, "
+             "fill_holes, smooth), walk connected components on the "
+             "post-everything mesh and remove any island whose face "
+             "count falls below --post-collapse-cull-min-faces. Stage "
+             "0.5/0.6 only catches PRE-collapse islands; orphans born "
+             "from material delimit, sharp delimit, or collapse-induced "
+             "topology splits survive into output. This stage cures "
+             "those — independent of how many decimation rounds ran.",
+    )
+    p.add_argument(
+        "--post-collapse-cull-min-faces",
+        type=int,
+        default=10,
+        help="With --post-collapse-cull: minimum face count for an "
+             "island to be kept. Islands below this threshold are "
+             "removed. Default 10 — strict enough to clear shrapnel "
+             "(1-2 face fragments are nearly always orphans) but lenient "
+             "enough to preserve small legitimate parts (sensors, "
+             "fasteners, HMI corners). Increase for cleaner output, "
+             "decrease if losing too many small parts.",
+    )
     return p.parse_args(argv)
 
 
@@ -1028,6 +1052,67 @@ def main() -> int:
                 bm.to_mesh(joined.data)
             bm.free()
         print(f"DIAMESH_FILL_HOLES_SMOOTH_VERTS={smooth_verts_count}")
+
+    # Stage 2.7 — post-collapse island cull. Decimation can leave
+    # behind tiny disconnected fragments (orphans) introduced by
+    # material delimit, sharp delimit, or collapse-induced topology
+    # splits. Stage 0.5/0.6's island cull only catches PRE-collapse
+    # islands; orphans born during Stage 2 survive into output. This
+    # stage walks connected components on the post-everything mesh
+    # and removes any island whose face count falls below the
+    # threshold. Independent of decimation rounds — also cures
+    # iterative-decimation amplification.
+    post_cull_islands = 0
+    post_cull_faces = 0
+    if args.post_collapse_cull:
+        bm = bmesh.new()
+        bm.from_mesh(joined.data)
+        bm.faces.ensure_lookup_table()
+
+        # BFS connected components over face adjacency
+        visited = set()
+        islands = []
+        for seed in bm.faces:
+            if seed in visited:
+                continue
+            stack = [seed]
+            component = []
+            while stack:
+                f = stack.pop()
+                if f in visited:
+                    continue
+                visited.add(f)
+                component.append(f)
+                for e in f.edges:
+                    for adj in e.link_faces:
+                        if adj not in visited:
+                            stack.append(adj)
+            islands.append(component)
+
+        min_faces = int(args.post_collapse_cull_min_faces)
+        to_remove = []
+        for island in islands:
+            if len(island) < min_faces:
+                to_remove.extend(island)
+                post_cull_islands += 1
+                post_cull_faces += len(island)
+
+        if to_remove:
+            try:
+                bmesh.ops.delete(bm, geom=to_remove, context="FACES")
+            except (RuntimeError, ValueError) as e:
+                print(
+                    f"WARN: post-collapse cull delete failed: {e}",
+                    file=sys.stderr,
+                )
+
+        bm.to_mesh(joined.data)
+        bm.free()
+        joined.data.update()
+
+        print(f"DIAMESH_POST_COLLAPSE_CULL_MIN_FACES={min_faces}")
+    print(f"DIAMESH_POST_COLLAPSE_CULL_REMOVED_ISLANDS={post_cull_islands}")
+    print(f"DIAMESH_POST_COLLAPSE_CULL_REMOVED_FACES={post_cull_faces}")
 
     # Output stats
     out_faces = len(joined.data.polygons)

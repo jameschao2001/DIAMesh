@@ -153,6 +153,8 @@ def _reduce_blender(
     bridge_loops: bool = False,
     bridge_loops_max_distance_frac: float = 0.005,
     aggressive_collapse: bool = False,
+    post_collapse_cull: bool = False,
+    post_collapse_cull_min_faces: int = 10,
 ) -> dict[str, int | float]:
     """Decimate via Blender headless — preserves materials, textures, hierarchy.
 
@@ -219,6 +221,9 @@ def _reduce_blender(
         cmd += ["--bridge-loops-max-distance-frac", str(float(bridge_loops_max_distance_frac))]
     if aggressive_collapse:
         cmd += ["--aggressive-collapse"]
+    if post_collapse_cull:
+        cmd += ["--post-collapse-cull"]
+        cmd += ["--post-collapse-cull-min-faces", str(int(post_collapse_cull_min_faces))]
 
     # Force UTF-8 + error replacement for the Blender subprocess stream:
     # Blender prints input file paths and a few status lines that may
@@ -307,6 +312,8 @@ def reduce_mesh(
     bridge_loops: bool = False,
     bridge_loops_max_distance_frac: float = 0.005,
     aggressive_collapse: bool = False,
+    post_collapse_cull: bool = False,
+    post_collapse_cull_min_faces: int = 10,
 ) -> dict[str, int | float]:
     """Reduce a mesh file's triangle count.
 
@@ -385,6 +392,8 @@ def reduce_mesh(
             bridge_loops=bridge_loops,
             bridge_loops_max_distance_frac=bridge_loops_max_distance_frac,
             aggressive_collapse=aggressive_collapse,
+            post_collapse_cull=post_collapse_cull,
+            post_collapse_cull_min_faces=post_collapse_cull_min_faces,
         )
 
     meshes = load_fbx(input_path)

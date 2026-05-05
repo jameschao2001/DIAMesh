@@ -227,6 +227,8 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
         bridge_loops=args.bridge_loops,
         bridge_loops_max_distance_frac=args.bridge_loops_max_distance_frac,
         aggressive_collapse=args.aggressive_collapse,
+        post_collapse_cull=args.post_collapse_cull,
+        post_collapse_cull_min_faces=args.post_collapse_cull_min_faces,
     )
     print(f"reduced: {args.file}")
     for k, v in metrics.items():
@@ -471,6 +473,25 @@ def main(argv: list[str] | None = None) -> int:
              "COLLAPSE delimit to {MATERIAL} only. Use when you need "
              "the requested --ratio enforced and can re-patch visual "
              "completeness downstream.",
+    )
+    p_reduce.add_argument(
+        "--post-collapse-cull",
+        action="store_true",
+        help="(blender backend) After all repair passes, walk connected "
+             "components on the post-everything mesh and remove islands "
+             "below --post-collapse-cull-min-faces. Cures orphans "
+             "produced by Stage 2 COLLAPSE that escape Stage 0.5/0.6's "
+             "pre-collapse cull. Especially useful after iterative "
+             "decimation (which amplifies orphan production).",
+    )
+    p_reduce.add_argument(
+        "--post-collapse-cull-min-faces",
+        type=int,
+        default=10,
+        help="With --post-collapse-cull: minimum face count for an "
+             "island to survive. Default 10 — clears 1-9 face shrapnel "
+             "while preserving small legitimate parts. Increase for "
+             "stricter cleaning, decrease if losing small parts.",
     )
     p_reduce.set_defaults(func=_cmd_reduce)
 
